@@ -1,0 +1,9 @@
+[package]
+name = "janus-proxy"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+janus-balancer = { path = "../janus-balancer" }
+janus-core = { path = "../janus-core" }
+janus-health = { path = "../janus-health" }

@@ -1,0 +1,15 @@
+[package]
+name = "janus-bin"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+janus-admin = { path = "../janus-admin" }
+janus-balancer = { path = "../janus-balancer" }
+janus-config = { path = "../janus-config" }
+janus-core = { path = "../janus-core" }
+janus-health = { path = "../janus-health" }
+janus-proxy = { path = "../janus-proxy" }
+tokio = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }

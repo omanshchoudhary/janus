@@ -1,0 +1,19 @@
+[workspace]
+members = [
+    "crates/janus-core",
+    "crates/janus-config",
+    "crates/janus-balancer",
+    "crates/janus-health",
+    "crates/janus-proxy",
+    "crates/janus-admin",
+    "crates/janus-bin"
+]
+resolver = "2"
+
+[workspace.dependencies]
+tokio = { version = "1", features = ["full"] }
+thiserror = "1"
+serde = { version = "1", features = ["derive"] }
+toml = "0.8"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["fmt", "env-filter"] }

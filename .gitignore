@@ -1,0 +1,39 @@
+# Rust build output
+/target/
+**/target/
+
+# Cargo lockfile
+# Keep this ignored for library-focused workspaces; commit it later if you want fully reproducible app builds.
+Cargo.lock
+
+# Environment files
+.env
+.env.*
+!.env.example
+
+# IDE and editor files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Logs and temp files
+*.log
+*.tmp
+*.temp
+
+# Coverage and profiling output
+coverage/
+*.profraw
+*.profdata
+
+# Rust tool artifacts
+**/*.rs.bk
+
+# Project docs not ready to commit
+PRD.md
