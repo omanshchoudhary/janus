@@ -1,3 +1,6 @@
+#![deny(clippy::all)]
+#![warn(clippy::pedantic)]
+
 use std::net::SocketAddr;
 
 // Error Types

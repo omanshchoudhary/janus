@@ -1,0 +1,11 @@
+# Maximum line length before wrapping code
+max_width = 100
+
+# Align with the latest Rust features and formatting standards
+edition = "2021"
+
+# Use standard Unix-style newlines (\n)
+newline_style = "Unix"
+
+# Put imports (use statements) in alphabetical order automatically
+reorder_imports = true
