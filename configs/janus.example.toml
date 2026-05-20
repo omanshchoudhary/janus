@@ -1,0 +1,109 @@
+# ==========================================
+# Janus Load Balancer Configuration Example
+# ==========================================
+
+# ------------------------------------------
+# 1. Admin Control Plane Config
+# ------------------------------------------
+# Exposes internal health, metrics, and configurations over HTTP.
+[admin]
+listen = "127.0.0.1:9090"
+metrics_enabled = true
+
+# ------------------------------------------
+# 2. Proxy Services Config
+# ------------------------------------------
+# A list of proxy services that Janus will run concurrently.
+[[services]]
+name = "my-http-web-service"
+listen = "127.0.0.1:8080"
+protocol = "http1"         # Can be "tcp" or "http1"
+balance = "round_robin"   # "round_robin", "least_connections", "weighted_round_robin", "ip_hash"
+
+# Timeout Policy
+[services.timeouts]
+connect = "5s"       # Time limit to establish a connection to a backend
+read = "30s"         # Time limit for reading from a backend
+write = "30s"        # Time limit for writing to a backend
+request = "60s"      # Total time limit for the entire HTTP request/response cycle
+idle = "90s"         # Time to keep idle connections alive in the pool
+
+# Retry Policy (Used if a backend connection fails)
+[services.retries]
+max_attempts = 3
+retry_on_connect_failure = true
+retry_on_status_codes = [502, 503, 504]
+backoff_ms = 100
+
+# Backend Pool
+[[services.backends]]
+id = "web-backend-1"
+address = "127.0.0.1:8081"
+weight = 5
+
+    # Active health checker for this backend
+    [services.backends.health_check]
+    type = "http"
+    path = "/healthz"
+    interval = "10s"
+    timeout = "2s"
+    healthy_threshold = 2
+    unhealthy_threshold = 3
+
+[[services.backends]]
+id = "web-backend-2"
+address = "127.0.0.1:8082"
+weight = 5
+
+    [services.backends.health_check]
+    type = "http"
+    path = "/healthz"
+    interval = "10s"
+    timeout = "2s"
+    healthy_threshold = 2
+    unhealthy_threshold = 3
+
+
+# ------------------------------------------
+# Example 2: Simple TCP Load Balancer
+# ------------------------------------------
+[[services]]
+name = "my-tcp-db-service"
+listen = "127.0.0.1:5432"
+protocol = "tcp"
+balance = "least_connections"
+
+[services.timeouts]
+connect = "3s"
+read = "120s"
+write = "120s"
+request = "0s"  # Disables request timeout for raw TCP streams
+idle = "300s"
+
+[services.retries]
+max_attempts = 2
+retry_on_connect_failure = true
+retry_on_status_codes = []
+backoff_ms = 200
+
+[[services.backends]]
+id = "db-backend-1"
+address = "127.0.0.1:5433"
+
+    [services.backends.health_check]
+    type = "tcp"
+    interval = "5s"
+    timeout = "1s"
+    healthy_threshold = 1
+    unhealthy_threshold = 2
+
+[[services.backends]]
+id = "db-backend-2"
+address = "127.0.0.1:5434"
+
+    [services.backends.health_check]
+    type = "tcp"
+    interval = "5s"
+    timeout = "1s"
+    healthy_threshold = 1
+    unhealthy_threshold = 2
