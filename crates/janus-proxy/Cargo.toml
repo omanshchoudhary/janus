@@ -7,3 +7,5 @@ edition = "2021"
 janus-balancer = { path = "../janus-balancer" }
 janus-core = { path = "../janus-core" }
 janus-health = { path = "../janus-health" }
+tokio = { workspace = true }
+tracing = { workspace = true }
