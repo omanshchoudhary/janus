@@ -1,9 +1,11 @@
 use std::net::SocketAddr;
 // To create mutable shared data for different tasks
+use janus_core::Backend;
 use std::sync::{
     atomic::{AtomicUsize, Ordering},
     Arc,
 };
+use tokio::time::{timeout, Duration};
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     net::{TcpListener, TcpStream},
@@ -13,8 +15,7 @@ pub struct ListenerConfig {
     pub listen_addr: SocketAddr,
 }
 
- pub struct ConnectionId(pub u64);
-
+pub struct ConnectionId(pub u64);
 
 fn increment_active_connections(active_connections: &AtomicUsize) -> usize {
     // Fetch add returns old value that is why adding plus in return value
@@ -37,7 +38,7 @@ pub async fn run_tcp_listener(config: ListenerConfig) -> janus_core::Result<()> 
             Ok((socket, addr)) => {
                 next_connection_id += 1;
                 let connection_id = ConnectionId(next_connection_id);
-                
+
                 let current = increment_active_connections(active_connections.as_ref());
 
                 tracing::info!(
@@ -106,6 +107,22 @@ async fn handle_connection(
     );
 }
 
+// Connect with backend address and
+async fn connect_backend(
+    backend: &Backend,
+    timeout_duration: Duration,
+) -> janus_core::Result<TcpStream>{
+    // If backend reponds in 2s success, otherwise timeout error
+    match timeout(timeout_duration, TcpStream::connect(backend.address.0)).await {
+        Ok(Ok(stream)) => Ok(stream),
+        Ok(Err(error)) => Err(error.into()),
+        Err(_) => Err(janus_core::Error::Timeout),
+    }
+
+}
+
+
+
 pub fn janus_proxy() -> &'static str {
     "janus-proxy"
 }
@@ -115,6 +132,7 @@ mod tests {
     use super::{decrement_active_connections, increment_active_connections};
     use std::sync::atomic::{AtomicUsize, Ordering};
 
+    // Checking active connections are handled properly.
     #[test]
     fn active_connection_counter_increments_and_decrements() {
         let active_connections = AtomicUsize::new(0);

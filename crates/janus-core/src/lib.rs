@@ -36,12 +36,18 @@ pub enum Protocol {
 }
 
 // Backend Identity
-pub type BackendId = u64;
+#[derive(Debug, Clone)]
+pub struct BackendId(pub String);
 
+// Backend Address
+#[derive(Debug, Clone)]
+pub struct BackendAddress(pub SocketAddr);
+
+// Backend Config
 #[derive(Debug, Clone)]
 pub struct Backend {
     pub id: BackendId,
-    pub address: SocketAddr,
+    pub address: BackendAddress,
     pub weight: u32,
 }
 
@@ -53,6 +59,7 @@ pub enum HealthStatus {
     Unhealthy,
     Draining,
 }
+
 
 pub fn janus_core() -> &'static str {
     "janus-core"
