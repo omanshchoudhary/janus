@@ -60,7 +60,6 @@ pub enum HealthStatus {
     Draining,
 }
 
-
 pub fn janus_core() -> &'static str {
     "janus-core"
 }

@@ -3,15 +3,56 @@
 
 use std::env;
 
+use janus_config::load_config;
+use janus_core::{Backend, BackendAddress, BackendId};
+use janus_proxy::ListenerConfig;
+
 #[tokio::main]
 async fn main() {
     tracing_subscriber::fmt::init();
 
+    if let Err(error) = run().await {
+        eprintln!("{error}");
+        std::process::exit(1);
+    }
+}
+
+async fn run() -> janus_core::Result<()> {
     let args: Vec<String> = env::args().collect();
 
     match parse_args(&args) {
+        // Use the config file path provided by the CLI.
         Ok(config_path) => {
             tracing::info!("Janus starting with config: {}", config_path);
+            // Read the configuration file.
+            let config = load_config(&config_path)?;
+
+            // Select the first service.
+            let service = config
+                .services
+                .first()
+                .ok_or_else(|| janus_core::Error::Config("no services defined".to_string()))?;
+
+            // Select the first backend of the first service.
+            let backend_config = service
+                .backends
+                .first()
+                .ok_or_else(|| janus_core::Error::Config("no backends defined".to_string()))?;
+
+            // Build the runtime listener configuration.
+            let listener_config = ListenerConfig {
+                listen_addr: service.listen_addr,
+            };
+
+            // Build the runtime backend model.
+            let backend = Backend {
+                id: BackendId(backend_config.id.clone()),
+                address: BackendAddress(backend_config.address),
+                weight: backend_config.weight,
+            };
+
+            janus_proxy::run_tcp_listener(listener_config, backend).await?;
+            Ok(())
         }
         Err(err) => {
             eprintln!("{err}");

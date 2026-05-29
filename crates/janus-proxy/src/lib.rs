@@ -4,12 +4,13 @@ use std::sync::{
     Arc,
 };
 
-use janus_core::{Backend, BackendAddress, BackendId};
+use janus_core::Backend;
 use tokio::{
     net::{TcpListener, TcpStream},
     time::{timeout, Duration},
 };
 
+// Janus server's listening address.
 pub struct ListenerConfig {
     pub listen_addr: SocketAddr,
 }
@@ -24,16 +25,14 @@ fn decrement_active_connections(active_connections: &AtomicUsize) -> usize {
     active_connections.fetch_sub(1, Ordering::Relaxed) - 1
 }
 
-pub async fn run_tcp_listener(config: ListenerConfig) -> janus_core::Result<()> {
+// Bind our listener to a port.
+pub async fn run_tcp_listener(config: ListenerConfig, backend: Backend) -> janus_core::Result<()> {
     let listener = TcpListener::bind(config.listen_addr).await?;
     tracing::info!("Listener started on {}", config.listen_addr);
+
     let mut next_connection_id = 0u64;
     let active_connections = Arc::new(AtomicUsize::new(0));
-    let backend = Backend {
-        id: BackendId("backend-1".to_string()),
-        address: BackendAddress("127.0.0.1:9000".parse().expect("valid backend address")),
-        weight: 1,
-    };
+    let backend = backend.clone();
 
     loop {
         match listener.accept().await {
