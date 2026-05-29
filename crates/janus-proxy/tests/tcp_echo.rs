@@ -1,8 +1,9 @@
+use janus_core::{Backend, BackendAddress, BackendId};
 use janus_proxy::{run_tcp_listener, ListenerConfig};
 use std::net::{SocketAddr, TcpListener as StdTcpListener};
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
-    net::TcpStream,
+    net::{TcpListener, TcpStream},
     time::{sleep, timeout, Duration},
 };
 
@@ -25,31 +26,62 @@ async fn connect_with_retry(addr: SocketAddr) -> TcpStream {
 }
 
 #[tokio::test]
-async fn echoes_bytes_back_to_tcp_client() {
-    let addr = next_available_addr();
-    let server = tokio::spawn(async move {
-        run_tcp_listener(ListenerConfig { listen_addr: addr })
+async fn proxies_bytes_to_backend_and_back() {
+    let backend_listener = TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind backend listener");
+    let backend_addr = backend_listener
+        .local_addr()
+        .expect("read backend listener addr");
+
+    let backend = tokio::spawn(async move {
+        let (mut socket, _) = backend_listener
+            .accept()
             .await
-            .expect("listener should run");
+            .expect("accept backend connection");
+
+        let mut buffer = [0_u8; 5];
+        socket
+            .read_exact(&mut buffer)
+            .await
+            .expect("read proxied bytes");
+        socket.write_all(&buffer).await.expect("write echoed bytes");
     });
 
-    let mut client = timeout(Duration::from_secs(2), connect_with_retry(addr))
+    let proxy_addr = next_available_addr();
+    let proxy = tokio::spawn(async move {
+        let backend = Backend {
+            id: BackendId("backend-1".to_string()),
+            address: BackendAddress(backend_addr),
+            weight: 1,
+        };
+
+        run_tcp_listener(
+            ListenerConfig {
+                listen_addr: proxy_addr,
+            },
+            backend,
+        )
+        .await
+        .expect("proxy listener should run");
+    });
+
+    let mut client = timeout(Duration::from_secs(2), connect_with_retry(proxy_addr))
         .await
         .expect("connect timeout");
 
-    client
-        .write_all(b"janus")
-        .await
-        .expect("write to echo server");
+    client.write_all(b"janus").await.expect("write to proxy");
+    client.shutdown().await.expect("shutdown client");
 
     let mut response = [0_u8; 5];
     timeout(Duration::from_secs(2), client.read_exact(&mut response))
         .await
         .expect("read timeout")
-        .expect("read echoed bytes");
+        .expect("read proxied response");
 
     assert_eq!(&response, b"janus");
 
-    server.abort();
-    let _ = server.await;
+    backend.await.expect("backend task panicked");
+    proxy.abort();
+    let _ = proxy.await;
 }
