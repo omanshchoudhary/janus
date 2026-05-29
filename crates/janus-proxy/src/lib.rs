@@ -1,10 +1,13 @@
-use std::net::SocketAddr;
-use std::sync::{
-    atomic::{AtomicUsize, Ordering},
-    Arc,
-};
-
 use janus_core::Backend;
+use std::net::SocketAddr;
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+use std::sync::Arc;
+
+// bytes-in and bytes-out metrics placeholders
+pub struct ProxyMetrics {
+    pub bytes_in: AtomicU64,
+    pub bytes_out: AtomicU64,
+}
 use tokio::{
     net::{TcpListener, TcpStream},
     time::{timeout, Duration},
@@ -28,6 +31,11 @@ fn decrement_active_connections(active_connections: &AtomicUsize) -> usize {
 // Bind our listener to a port.
 pub async fn run_tcp_listener(config: ListenerConfig, backend: Backend) -> janus_core::Result<()> {
     let listener = TcpListener::bind(config.listen_addr).await?;
+    let metrics = Arc::new(ProxyMetrics {
+        bytes_in: AtomicU64::new(0),
+        bytes_out: AtomicU64::new(0),
+    });
+
     tracing::info!("Listener started on {}", config.listen_addr);
 
     let mut next_connection_id = 0u64;
@@ -50,6 +58,7 @@ pub async fn run_tcp_listener(config: ListenerConfig, backend: Backend) -> janus
 
                 let active_connections_for_task = Arc::clone(&active_connections);
                 let backend_for_task = backend.clone();
+                let metrics_for_task = metrics.clone();
                 tokio::spawn(async move {
                     handle_connection(
                         socket,
@@ -57,6 +66,7 @@ pub async fn run_tcp_listener(config: ListenerConfig, backend: Backend) -> janus
                         addr,
                         active_connections_for_task,
                         backend_for_task,
+                        metrics_for_task,
                     )
                     .await;
                 });
@@ -74,6 +84,7 @@ async fn handle_connection(
     peer_addr: SocketAddr,
     active_connections: Arc<AtomicUsize>,
     backend: Backend,
+    metrics: Arc<ProxyMetrics>,
 ) {
     tracing::info!(
         connection_id = connection_id.0,
@@ -108,6 +119,16 @@ async fn handle_connection(
 
     match tokio::io::copy_bidirectional(&mut client_socket, &mut backend_socket).await {
         Ok((client_to_backend_bytes, backend_to_client_bytes)) => {
+            metrics
+                .bytes_in
+                .fetch_add(client_to_backend_bytes, Ordering::Relaxed);
+
+            metrics
+                .bytes_out
+                .fetch_add(backend_to_client_bytes, Ordering::Relaxed);
+
+            let total_bytes_in = metrics.bytes_in.load(Ordering::Relaxed);
+            let total_bytes_out = metrics.bytes_out.load(Ordering::Relaxed);
             let duration = started_at.elapsed();
             tracing::info!(
                 connection_id = connection_id.0,
@@ -115,6 +136,8 @@ async fn handle_connection(
                 backend_id = %backend.id.0,
                 client_to_backend_bytes,
                 backend_to_client_bytes,
+                total_bytes_in,
+                total_bytes_out,
                 ?duration,
                 "forwarded tcp connection"
             );
