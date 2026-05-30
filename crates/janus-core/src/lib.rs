@@ -1,7 +1,13 @@
 #![deny(clippy::all)]
 #![warn(clippy::pedantic)]
 
-use std::{net::SocketAddr, sync::Arc};
+use std::{
+    net::SocketAddr,
+    sync::{
+        atomic::{AtomicU64, AtomicUsize, Ordering},
+        Arc, RwLock,
+    },
+};
 
 // Error Types
 #[derive(Debug, thiserror::Error)]
@@ -61,7 +67,53 @@ pub enum HealthStatus {
 }
 
 #[derive(Debug)]
-pub struct BackendRuntime;
+pub struct BackendRuntime {
+    backend: Backend,
+    active_connections: AtomicUsize,
+    total_connections: AtomicU64,
+    total_failures: AtomicU64,
+    health: RwLock<HealthStatus>,
+}
+
+impl BackendRuntime {
+    pub fn new(backend: Backend) -> Self {
+        Self {
+            backend,
+            active_connections: AtomicUsize::new(0),
+            total_connections: AtomicU64::new(0),
+            total_failures: AtomicU64::new(0),
+            health: RwLock::new(HealthStatus::Unknown),
+        }
+    }
+
+    pub fn backend(&self) -> &Backend {
+        &self.backend
+    }
+
+    pub fn active_connections(&self) -> usize {
+        self.active_connections.load(Ordering::Relaxed)
+    }
+
+    pub fn total_connections(&self) -> u64 {
+        self.total_connections.load(Ordering::Relaxed)
+    }
+
+    pub fn total_failures(&self) -> u64 {
+        self.total_failures.load(Ordering::Relaxed)
+    }
+
+    pub fn health(&self) -> HealthStatus {
+        *self.health
+            .read()
+            .expect("Failed to acquire read lock on backend health status")
+    }
+
+    pub fn set_health(&self, status: HealthStatus) {
+        *self.health
+            .write()
+            .expect("Failed to acquire write lock on backend health status") = status;
+    }
+}
 
 // Runtime state for backend live status
 #[derive(Clone, Debug)]
