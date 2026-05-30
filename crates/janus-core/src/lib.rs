@@ -1,7 +1,7 @@
 #![deny(clippy::all)]
 #![warn(clippy::pedantic)]
 
-use std::net::SocketAddr;
+use std::{net::SocketAddr, sync::Arc};
 
 // Error Types
 #[derive(Debug, thiserror::Error)]
@@ -58,6 +58,28 @@ pub enum HealthStatus {
     Healthy,
     Unhealthy,
     Draining,
+}
+
+#[derive(Debug)]
+pub struct BackendRuntime;
+
+// Runtime state for backend live status
+#[derive(Clone, Debug)]
+pub struct RuntimeState {
+    backends: Arc<Vec<Arc<BackendRuntime>>>,
+}
+
+impl RuntimeState {
+    pub fn new(backends: Vec<BackendRuntime>) -> Self {
+        let backends = backends.into_iter().map(Arc::new).collect::<Vec<_>>();
+        Self {
+            backends: Arc::new(backends),
+        }
+    }
+
+    pub fn backends(&self) -> &[Arc<BackendRuntime>] {
+        self.backends.as_ref().as_slice()
+    }
 }
 
 pub fn janus_core() -> &'static str {
