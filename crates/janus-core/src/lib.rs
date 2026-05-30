@@ -135,6 +135,10 @@ impl BackendRuntime {
             backend: Arc::clone(self),
         }
     }
+
+    pub fn record_failure(&self) {
+        self.total_failures.fetch_add(1, Ordering::Relaxed);
+    }
 }
 
 // Runtime state for backend live status
@@ -178,9 +182,42 @@ pub struct ActiveConnectionGuard {
 
 impl Drop for ActiveConnectionGuard {
     fn drop(&mut self) {
-        self.backend.active_connections.fetch_sub(1, Ordering::Relaxed);
+        self.backend
+            .active_connections
+            .fetch_sub(1, Ordering::Relaxed);
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn sample_backend() -> Backend {
+        Backend {
+            id: BackendId("backend-1".to_string()),
+            address: BackendAddress("127.0.0.1:9000".parse().expect("valid socket address")),
+            weight: 1,
+        }
+    }
+
+    #[test]
+    fn active_connection_guard_decrements_on_drop() {
+        let runtime = Arc::new(BackendRuntime::new(sample_backend()));
+
+        assert_eq!(runtime.active_connections(), 0);
+        assert_eq!(runtime.total_connections(), 0);
+
+        {
+            let _guard = runtime.begin_connection();
+            assert_eq!(runtime.active_connections(), 1);
+            assert_eq!(runtime.total_connections(), 1);
+        }
+
+        assert_eq!(runtime.active_connections(), 0);
+        assert_eq!(runtime.total_connections(), 1);
+    }
+}
+
 pub fn janus_core() -> &'static str {
     "janus-core"
 }

@@ -4,7 +4,7 @@ use tokio::{
     time::{timeout, Duration},
 };
 
-use janus_core::Backend;
+use janus_core::{Backend, BackendRuntime};
 use std::net::SocketAddr;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::Arc;
@@ -38,6 +38,7 @@ pub async fn run_tcp_listener(config: ListenerConfig, backend: Backend) -> janus
 }
 
 pub async fn serve_tcp_listener(listener: TcpListener, backend: Backend) -> janus_core::Result<()> {
+    let backend_runtime = Arc::new(BackendRuntime::new(backend.clone()));
     let metrics = Arc::new(ProxyMetrics {
         bytes_in: AtomicU64::new(0),
         bytes_out: AtomicU64::new(0),
@@ -45,11 +46,10 @@ pub async fn serve_tcp_listener(listener: TcpListener, backend: Backend) -> janu
 
     let mut next_connection_id = 0u64;
     let active_connections = Arc::new(AtomicUsize::new(0));
-    let backend = backend.clone();
-
     loop {
         match listener.accept().await {
             Ok((socket, addr)) => {
+                let backend_runtime_for_task = Arc::clone(&backend_runtime);
                 next_connection_id += 1;
                 let connection_id = ConnectionId(next_connection_id);
                 let current = increment_active_connections(active_connections.as_ref());
@@ -62,7 +62,6 @@ pub async fn serve_tcp_listener(listener: TcpListener, backend: Backend) -> janu
                 );
 
                 let active_connections_for_task = Arc::clone(&active_connections);
-                let backend_for_task = backend.clone();
                 let metrics_for_task = metrics.clone();
                 tokio::spawn(async move {
                     handle_connection(
@@ -70,7 +69,7 @@ pub async fn serve_tcp_listener(listener: TcpListener, backend: Backend) -> janu
                         connection_id,
                         addr,
                         active_connections_for_task,
-                        backend_for_task,
+                        backend_runtime_for_task,
                         metrics_for_task,
                     )
                     .await;
@@ -88,9 +87,12 @@ async fn handle_connection(
     connection_id: ConnectionId,
     peer_addr: SocketAddr,
     active_connections: Arc<AtomicUsize>,
-    backend: Backend,
+    backend_runtime: Arc<BackendRuntime>,
     metrics: Arc<ProxyMetrics>,
 ) {
+    let _connection_guard = backend_runtime.begin_connection();
+    let backend = backend_runtime.backend();
+
     tracing::info!(
         connection_id = connection_id.0,
         %peer_addr,
@@ -110,6 +112,7 @@ async fn handle_connection(
                 %error,
                 "failed to connect to backend"
             );
+            backend_runtime.record_failure();
 
             let _ = client_socket.shutdown().await;
 
@@ -157,6 +160,7 @@ async fn handle_connection(
                 %error,
                 "tcp forwarding failed"
             );
+            backend_runtime.record_failure();
         }
     }
 
