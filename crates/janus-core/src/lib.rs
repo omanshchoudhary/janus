@@ -113,6 +113,18 @@ impl BackendRuntime {
             .write()
             .expect("Failed to acquire write lock on backend health status") = status;
     }
+
+    pub fn snapshot(&self) -> BackendSnapshot {
+        BackendSnapshot {
+            id: self.backend.id.clone(),
+            address: self.backend.address.clone(),
+            weight: self.backend.weight,
+            health: self.health(),
+            active_connections: self.active_connections(),
+            total_connections: self.total_connections(),
+            total_failures: self.total_failures(),
+        }
+    }
 }
 
 // Runtime state for backend live status
@@ -132,6 +144,22 @@ impl RuntimeState {
     pub fn backends(&self) -> &[Arc<BackendRuntime>] {
         self.backends.as_ref().as_slice()
     }
+
+    pub fn snapshots(&self) -> Vec<BackendSnapshot> {
+        self.backends.iter().map(|b| b.snapshot()).collect()
+    }
+}
+
+// Immutable view of runtime state
+#[derive(Clone, Debug)]
+pub struct BackendSnapshot {
+    pub id: BackendId,
+    pub address: BackendAddress,
+    pub weight: u32,
+    pub health: HealthStatus,
+    pub active_connections: usize,
+    pub total_connections: u64,
+    pub total_failures: u64,
 }
 
 pub fn janus_core() -> &'static str {
