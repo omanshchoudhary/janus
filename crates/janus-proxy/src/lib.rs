@@ -1,4 +1,5 @@
 use tokio::{
+    io::AsyncWriteExt,
     net::{TcpListener, TcpStream},
     time::{timeout, Duration},
 };
@@ -110,6 +111,8 @@ async fn handle_connection(
                 "failed to connect to backend"
             );
 
+            let _ = client_socket.shutdown().await;
+
             let current = decrement_active_connections(active_connections.as_ref());
             tracing::info!(
                 connection_id = connection_id.0,
@@ -156,6 +159,8 @@ async fn handle_connection(
             );
         }
     }
+
+    let _ = client_socket.shutdown().await;
 
     let current = decrement_active_connections(active_connections.as_ref());
     tracing::info!(

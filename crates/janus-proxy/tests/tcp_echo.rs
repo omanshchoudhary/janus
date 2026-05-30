@@ -85,3 +85,42 @@ async fn proxies_bytes_to_backend_and_back() {
     proxy.abort();
     let _ = proxy.await;
 }
+
+#[tokio::test]
+async fn closes_client_when_backend_is_unavailable() {
+    // Fake a dead backend as nothing is listening there
+    let unavailable_backend_addr = next_available_addr();
+    // Janus will listen here
+    let proxy_addr = next_available_addr();
+
+    let proxy = tokio::spawn(async move {
+        let backend = Backend {
+            id: BackendId("backend-down".to_string()),
+            address: BackendAddress(unavailable_backend_addr),
+            weight: 1,
+        };
+
+        run_tcp_listener(
+            ListenerConfig {
+                listen_addr: proxy_addr,
+            },
+            backend,
+        )
+        .await
+        .expect("proxy listener should run");
+    });
+
+    let mut client = timeout(Duration::from_secs(2), connect_with_retry(proxy_addr))
+        .await
+        .expect("connect timeout");
+    client.write_all(b"janus").await.expect("write to proxy");
+    let mut buf = [0_u8; 16];
+    let read_result = timeout(Duration::from_secs(2), client.read(&mut buf))
+        .await
+        .expect("read timeout")
+        .expect("read from proxy");
+    assert_eq!(read_result, 0);
+
+    proxy.abort();
+    let _ = proxy.await;
+}
