@@ -66,6 +66,7 @@ pub enum HealthStatus {
     Draining,
 }
 
+// Stores the runtime state and health metrics of a backend
 #[derive(Debug)]
 pub struct BackendRuntime {
     backend: Backend,
@@ -103,13 +104,15 @@ impl BackendRuntime {
     }
 
     pub fn health(&self) -> HealthStatus {
-        *self.health
+        *self
+            .health
             .read()
             .expect("Failed to acquire read lock on backend health status")
     }
 
     pub fn set_health(&self, status: HealthStatus) {
-        *self.health
+        *self
+            .health
             .write()
             .expect("Failed to acquire write lock on backend health status") = status;
     }
@@ -123,6 +126,13 @@ impl BackendRuntime {
             active_connections: self.active_connections(),
             total_connections: self.total_connections(),
             total_failures: self.total_failures(),
+        }
+    }
+    pub fn begin_connection(self: &Arc<Self>) -> ActiveConnectionGuard {
+        self.active_connections.fetch_add(1, Ordering::Relaxed);
+        self.total_connections.fetch_add(1, Ordering::Relaxed);
+        ActiveConnectionGuard {
+            backend: Arc::clone(self),
         }
     }
 }
@@ -162,6 +172,15 @@ pub struct BackendSnapshot {
     pub total_failures: u64,
 }
 
+pub struct ActiveConnectionGuard {
+    backend: Arc<BackendRuntime>,
+}
+
+impl Drop for ActiveConnectionGuard {
+    fn drop(&mut self) {
+        self.backend.active_connections.fetch_sub(1, Ordering::Relaxed);
+    }
+}
 pub fn janus_core() -> &'static str {
     "janus-core"
 }
