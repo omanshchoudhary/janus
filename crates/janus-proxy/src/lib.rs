@@ -39,8 +39,25 @@ pub async fn run_tcp_listener(config: ListenerConfig, backend: Backend) -> janus
 }
 
 pub async fn serve_tcp_listener(listener: TcpListener, backend: Backend) -> janus_core::Result<()> {
-    let backend_runtime = Arc::new(BackendRuntime::new(backend.clone()));
-    backend_runtime.set_health(HealthStatus::Healthy);
+    let balancer = Arc::new(RoundRobinBalancer::new());
+    serve_tcp_listener_multi(listener, vec![backend], balancer).await
+}
+
+pub async fn run_tcp_listener_multi(
+    config: ListenerConfig,
+    backends: Vec<Backend>,
+    balancer: Arc<dyn LoadBalancer + Send + Sync>,
+) -> janus_core::Result<()> {
+    let listener = TcpListener::bind(config.listen_addr).await?;
+    tracing::info!("Listener started");
+    serve_tcp_listener_multi(listener, backends, balancer).await
+}
+
+pub async fn serve_tcp_listener_multi(
+    listener: TcpListener,
+    backends: Vec<Backend>,
+    balancer: Arc<dyn LoadBalancer + Send + Sync>,
+) -> janus_core::Result<()> {
     let metrics = Arc::new(ProxyMetrics {
         bytes_in: AtomicU64::new(0),
         bytes_out: AtomicU64::new(0),
@@ -48,10 +65,15 @@ pub async fn serve_tcp_listener(listener: TcpListener, backend: Backend) -> janu
 
     let mut next_connection_id = 0u64;
     let active_connections = Arc::new(AtomicUsize::new(0));
-    let balancer = Arc::new(RoundRobinBalancer::new());
-    let candidates = vec![BackendCandidate {
-        runtime: Arc::clone(&backend_runtime),
-    }];
+    let candidates: Vec<BackendCandidate> = backends
+        .into_iter()
+        .map(|b| {
+            let runtime = Arc::new(BackendRuntime::new(b));
+            runtime.set_health(HealthStatus::Healthy);
+            BackendCandidate { runtime }
+        })
+        .collect();
+
     loop {
         match listener.accept().await {
             // addr is the client address
