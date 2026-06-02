@@ -101,3 +101,53 @@ impl LoadBalancer for LeastConnectionsBalancer {
         })
     }
 }
+
+#[derive(Debug, Default)]
+pub struct WeightedRoundRobinBalancer {
+    cursor: AtomicUsize,
+}
+
+impl WeightedRoundRobinBalancer {
+    pub fn new() -> Self {
+        Self::default()
+    }
+}
+
+impl LoadBalancer for WeightedRoundRobinBalancer {
+    fn select(
+        &self,
+        candidates: &[BackendCandidate],
+        _ctx: &SelectionContext,
+    ) -> Option<SelectedBackend> {
+        let healthy = healthy_candidates(candidates);
+        if healthy.is_empty() {
+            return None;
+        }
+
+        let expanded = expanded_indexes(&healthy);
+        let slot;
+        let idx;
+        if expanded.is_empty() {
+            idx = self.cursor.fetch_add(1, Ordering::Relaxed) % healthy.len();
+        } else {
+            slot = self.cursor.fetch_add(1, Ordering::Relaxed) % expanded.len();
+            idx = expanded[slot];
+        }
+
+        Some(SelectedBackend {
+            runtime: Arc::clone(&healthy[idx].runtime),
+        })
+    }
+}
+
+fn expanded_indexes(candidates: &[BackendCandidate]) -> Vec<usize> {
+    let mut expanded = Vec::new();
+
+    for (idx, candidate) in candidates.iter().enumerate() {
+        let weight = candidate.runtime.backend().weight;
+        for _ in 0..weight {
+            expanded.push(idx);
+        }
+    }
+    expanded
+}
