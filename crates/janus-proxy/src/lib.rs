@@ -1,10 +1,11 @@
+use janus_balancer::{BackendCandidate, LoadBalancer, RoundRobinBalancer, SelectionContext};
 use tokio::{
     io::AsyncWriteExt,
     net::{TcpListener, TcpStream},
     time::{timeout, Duration},
 };
 
-use janus_core::{Backend, BackendRuntime};
+use janus_core::{Backend, BackendRuntime, HealthStatus};
 use std::net::SocketAddr;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::Arc;
@@ -39,6 +40,7 @@ pub async fn run_tcp_listener(config: ListenerConfig, backend: Backend) -> janus
 
 pub async fn serve_tcp_listener(listener: TcpListener, backend: Backend) -> janus_core::Result<()> {
     let backend_runtime = Arc::new(BackendRuntime::new(backend.clone()));
+    backend_runtime.set_health(HealthStatus::Healthy);
     let metrics = Arc::new(ProxyMetrics {
         bytes_in: AtomicU64::new(0),
         bytes_out: AtomicU64::new(0),
@@ -46,10 +48,26 @@ pub async fn serve_tcp_listener(listener: TcpListener, backend: Backend) -> janu
 
     let mut next_connection_id = 0u64;
     let active_connections = Arc::new(AtomicUsize::new(0));
+    let balancer = Arc::new(RoundRobinBalancer::new());
+    let candidates = vec![BackendCandidate {
+        runtime: Arc::clone(&backend_runtime),
+    }];
     loop {
         match listener.accept().await {
-            Ok((socket, addr)) => {
-                let backend_runtime_for_task = Arc::clone(&backend_runtime);
+            // addr is the client address
+            Ok((mut socket, addr)) => {
+                let ctx = SelectionContext {
+                    client_addr: Some(addr),
+                };
+                let selected = match balancer.select(&candidates, &ctx) {
+                    Some(selected) => selected,
+                    None => {
+                        tracing::warn!(%addr, "no backend available for connection");
+                        let _ = socket.shutdown().await;
+                        continue;
+                    }
+                };
+
                 next_connection_id += 1;
                 let connection_id = ConnectionId(next_connection_id);
                 let current = increment_active_connections(active_connections.as_ref());
@@ -63,6 +81,8 @@ pub async fn serve_tcp_listener(listener: TcpListener, backend: Backend) -> janu
 
                 let active_connections_for_task = Arc::clone(&active_connections);
                 let metrics_for_task = metrics.clone();
+                let backend_runtime_for_task = Arc::clone(&selected.runtime);
+
                 tokio::spawn(async move {
                     handle_connection(
                         socket,
