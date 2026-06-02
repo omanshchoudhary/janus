@@ -1,4 +1,6 @@
 use janus_core::{BackendRuntime, HealthStatus};
+use std::collections::hash_map::DefaultHasher;
+use std::hash::{Hash, Hasher};
 use std::net::SocketAddr;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
@@ -150,4 +152,42 @@ fn expanded_indexes(candidates: &[BackendCandidate]) -> Vec<usize> {
         }
     }
     expanded
+}
+
+#[derive(Default)]
+pub struct IpHashBalancer;
+
+impl IpHashBalancer {
+    pub fn new() -> Self {
+        Self::default()
+    }
+}
+
+impl LoadBalancer for IpHashBalancer {
+    fn select(
+        &self,
+        candidates: &[BackendCandidate],
+        ctx: &SelectionContext,
+    ) -> Option<SelectedBackend> {
+        let healthy = healthy_candidates(candidates);
+        if healthy.is_empty() {
+            return None;
+        }
+
+        if let Some(addr) = ctx.client_addr {
+            let mut hasher = DefaultHasher::new();
+            addr.ip().hash(&mut hasher);
+            let idx = (hasher.finish() as usize) % healthy.len();
+            Some(SelectedBackend {
+                runtime: Arc::clone(&healthy[idx].runtime),
+            })
+        } else {
+            healthy
+                .iter()
+                .min_by(|a, b| a.runtime.backend().id.0.cmp(&b.runtime.backend().id.0))
+                .map(|candidate| SelectedBackend {
+                    runtime: Arc::clone(&candidate.runtime),
+                })
+        }
+    }
 }
