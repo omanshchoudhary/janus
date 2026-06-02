@@ -67,3 +67,37 @@ impl LoadBalancer for RoundRobinBalancer {
         })
     }
 }
+
+#[derive(Default)]
+pub struct LeastConnectionsBalancer;
+
+impl LeastConnectionsBalancer {
+    pub fn new() -> Self {
+        Self::default()
+    }
+}
+
+impl LoadBalancer for LeastConnectionsBalancer {
+    fn select(
+        &self,
+        candidates: &[BackendCandidate],
+        _ctx: &SelectionContext,
+    ) -> Option<SelectedBackend> {
+        let healthy = healthy_candidates(candidates);
+        if healthy.is_empty() {
+            return None;
+        }
+
+        let chosen = healthy.into_iter().min_by(|a, b| {
+            let a_load = a.runtime.active_connections();
+            let b_load = b.runtime.active_connections();
+            a_load
+                .cmp(&b_load)
+                .then_with(|| a.runtime.backend().id.0.cmp(&b.runtime.backend().id.0))
+        });
+
+        chosen.map(|candidate| SelectedBackend {
+            runtime: Arc::clone(&candidate.runtime),
+        })
+    }
+}
