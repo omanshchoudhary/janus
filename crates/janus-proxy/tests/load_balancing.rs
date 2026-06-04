@@ -1,5 +1,5 @@
 use janus_balancer::{IpHashBalancer, RoundRobinBalancer, WeightedRoundRobinBalancer};
-use janus_core::{Backend, BackendAddress, BackendId};
+use janus_core::{Backend, BackendAddress, BackendId, Protocol};
 use janus_proxy::{run_tcp_listener_multi, ListenerConfig};
 use std::net::{SocketAddr, TcpListener as StdTcpListener};
 use std::sync::Arc;
@@ -71,6 +71,7 @@ async fn test_round_robin_integration() {
             },
             vec![b1, b2],
             balancer,
+            Protocol::Tcp,
         )
         .await
         .expect("proxy listener should run");
@@ -121,6 +122,7 @@ async fn test_weighted_round_robin_integration() {
             },
             vec![b1, b2],
             balancer,
+            Protocol::Tcp,
         )
         .await
         .expect("proxy listener should run");
@@ -170,6 +172,7 @@ async fn test_ip_hash_integration() {
             },
             vec![b1, b2],
             balancer,
+            Protocol::Tcp,
         )
         .await
         .expect("proxy listener should run");
