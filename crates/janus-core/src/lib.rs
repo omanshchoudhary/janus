@@ -35,9 +35,11 @@ pub enum Error {
 pub type Result<T> = std::result::Result<T, Error>;
 
 // Protocol Enums
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
 pub enum Protocol {
     Tcp,
+    #[serde(alias = "http")]
     Http1,
 }
 
@@ -221,3 +223,18 @@ mod tests {
 pub fn janus_core() -> &'static str {
     "janus-core"
 }
+
+#[derive(Debug, Clone)]
+pub struct HttpHeader {
+    pub name: String,
+    pub value: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct HttpRequestHead {
+    pub method: String,
+    pub target: String,
+    pub version: String,
+    pub headers: Vec<HttpHeader>,
+}
+

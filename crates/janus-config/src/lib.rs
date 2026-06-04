@@ -1,3 +1,4 @@
+use janus_core::Protocol;
 use serde::Deserialize;
 use std::{fs, net::SocketAddr};
 
@@ -16,6 +17,7 @@ pub struct ServiceConfig {
     pub name: String,
     pub listen_addr: SocketAddr,
     pub backends: Vec<Backend>,
+    pub protocol: Protocol,
 }
 
 #[derive(Debug, Deserialize)]

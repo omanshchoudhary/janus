@@ -5,7 +5,7 @@ use tokio::{
     time::{timeout, Duration},
 };
 
-use janus_core::{Backend, BackendRuntime, HealthStatus};
+use janus_core::{Backend, BackendRuntime, HealthStatus, Protocol};
 use std::net::SocketAddr;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::Arc;
@@ -31,7 +31,7 @@ fn decrement_active_connections(active_connections: &AtomicUsize) -> usize {
     active_connections.fetch_sub(1, Ordering::Relaxed) - 1
 }
 
-// Bind our listener to a port.
+// Bind our tcp listener to a port.
 pub async fn run_tcp_listener(config: ListenerConfig, backend: Backend) -> janus_core::Result<()> {
     let listener = TcpListener::bind(config.listen_addr).await?;
     tracing::info!("Listener started");
@@ -40,23 +40,25 @@ pub async fn run_tcp_listener(config: ListenerConfig, backend: Backend) -> janus
 
 pub async fn serve_tcp_listener(listener: TcpListener, backend: Backend) -> janus_core::Result<()> {
     let balancer = Arc::new(RoundRobinBalancer::new());
-    serve_tcp_listener_multi(listener, vec![backend], balancer).await
+    serve_tcp_listener_multi(listener, vec![backend], balancer, Protocol::Tcp).await
 }
 
 pub async fn run_tcp_listener_multi(
     config: ListenerConfig,
     backends: Vec<Backend>,
     balancer: Arc<dyn LoadBalancer + Send + Sync>,
+    protocol: Protocol,
 ) -> janus_core::Result<()> {
     let listener = TcpListener::bind(config.listen_addr).await?;
     tracing::info!("Listener started");
-    serve_tcp_listener_multi(listener, backends, balancer).await
+    serve_tcp_listener_multi(listener, backends, balancer, protocol).await
 }
 
 pub async fn serve_tcp_listener_multi(
     listener: TcpListener,
     backends: Vec<Backend>,
     balancer: Arc<dyn LoadBalancer + Send + Sync>,
+    protocol: Protocol,
 ) -> janus_core::Result<()> {
     let metrics = Arc::new(ProxyMetrics {
         bytes_in: AtomicU64::new(0),
@@ -106,15 +108,35 @@ pub async fn serve_tcp_listener_multi(
                 let backend_runtime_for_task = Arc::clone(&selected.runtime);
 
                 tokio::spawn(async move {
-                    handle_connection(
-                        socket,
-                        connection_id,
-                        addr,
-                        active_connections_for_task,
-                        backend_runtime_for_task,
-                        metrics_for_task,
-                    )
-                    .await;
+                    match protocol {
+                        Protocol::Tcp => {
+                            handle_tcp_connection(
+                                socket,
+                                connection_id,
+                                addr,
+                                active_connections_for_task,
+                                backend_runtime_for_task,
+                                metrics_for_task,
+                            )
+                            .await;
+                        }
+                        Protocol::Http1 => {
+                            tracing::warn!(
+                                connection_id = connection_id.0,
+                                %addr,
+                                "HTTP/1.1 proxying is not implemented yet"
+                            );
+                            let _ = socket.shutdown().await;
+                            let current =
+                                decrement_active_connections(active_connections_for_task.as_ref());
+                            tracing::info!(
+                                connection_id = connection_id.0,
+                                %addr,
+                                active_connections = current,
+                                "closed connection"
+                            );
+                        }
+                    }
                 });
             }
             Err(error) => {
@@ -124,7 +146,21 @@ pub async fn serve_tcp_listener_multi(
     }
 }
 
-async fn handle_connection(
+// Bind our https listener to a port.
+pub async fn run_http_listener(config: ListenerConfig, backend: Backend) -> janus_core::Result<()> {
+    let listener = TcpListener::bind(config.listen_addr).await?;
+    serve_http_listener(listener, backend).await?;
+    Ok(())
+}
+
+pub async fn serve_http_listener(
+    _listener: TcpListener,
+    _backend: Backend,
+) -> janus_core::Result<()> {
+    Ok(())
+}
+
+async fn handle_tcp_connection(
     mut client_socket: TcpStream,
     connection_id: ConnectionId,
     peer_addr: SocketAddr,
