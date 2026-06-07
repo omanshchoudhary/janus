@@ -5,9 +5,7 @@ use tokio::{
     time::{timeout, Duration},
 };
 
-use janus_core::{
-    Backend, BackendRuntime, HealthStatus, HttpHeader, HttpRequestHead, Protocol,
-};
+use janus_core::{Backend, BackendRuntime, HealthStatus, HttpHeader, HttpRequestHead, Protocol};
 use std::net::SocketAddr;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::Arc;
@@ -281,7 +279,9 @@ fn parse_request_line(line: &str) -> janus_core::Result<HttpRequestHead> {
     let method = parts[0];
     let target = parts[1];
     let version = parts[2];
-
+    
+    validate_target(target)?; 
+    
     Ok(HttpRequestHead {
         method: method.to_string(),
         target: target.to_string(),
@@ -323,6 +323,16 @@ mod tests {
     #[test]
     fn rejects_too_few_tokens() {
         assert!(parse_request_line("GET /\r\n").is_err());
+    }
+
+    #[test]
+    fn rejects_target_without_leading_slash() {
+        assert!(parse_request_line("GET index.html HTTP/1.1\r\n").is_err());
+    }
+
+    #[test]
+    fn rejects_absolute_form_target() {
+        assert!(parse_request_line("GET http://x/ HTTP/1.1\r\n").is_err());
     }
 
     #[tokio::test]
@@ -367,10 +377,17 @@ async fn read_request_head<R: AsyncBufRead + Unpin>(
         }
         let trimmed = line.trim_end_matches(['\r', '\n']);
         if trimmed.is_empty() {
-            break; // Blank line, meaning end of headers 
+            break; // Blank line, meaning end of headers
         }
         head.headers.push(parse_header_line(trimmed)?);
     }
 
     Ok(head)
+}
+
+fn validate_target(target: &str) -> janus_core::Result<()> {
+    if target.is_empty() || !target.starts_with('/') {
+        return Err(janus_core::Error::Protocol("invalid request target".into()));
+    }
+    Ok(())
 }
