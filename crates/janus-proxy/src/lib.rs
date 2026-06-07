@@ -1,11 +1,13 @@
 use janus_balancer::{BackendCandidate, LoadBalancer, RoundRobinBalancer, SelectionContext};
 use tokio::{
-    io::AsyncWriteExt,
+    io::{AsyncBufRead, AsyncBufReadExt, AsyncWriteExt},
     net::{TcpListener, TcpStream},
     time::{timeout, Duration},
 };
 
-use janus_core::{Backend, BackendRuntime, HealthStatus, HttpRequestHead, Protocol};
+use janus_core::{
+    Backend, BackendRuntime, HealthStatus, HttpHeader, HttpRequestHead, Protocol,
+};
 use std::net::SocketAddr;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::Arc;
@@ -290,7 +292,10 @@ fn parse_request_line(line: &str) -> janus_core::Result<HttpRequestHead> {
 
 #[cfg(test)]
 mod tests {
-    use super::{decrement_active_connections, increment_active_connections, parse_request_line};
+    use super::{
+        decrement_active_connections, increment_active_connections, parse_request_line,
+        read_request_head,
+    };
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     #[test]
@@ -319,4 +324,53 @@ mod tests {
     fn rejects_too_few_tokens() {
         assert!(parse_request_line("GET /\r\n").is_err());
     }
+
+    #[tokio::test]
+    async fn reads_request_line_and_headers() {
+        use tokio::io::BufReader;
+        let raw = b"GET / HTTP/1.1\r\nHost: localhost:8080\r\n\r\n";
+        let mut r = BufReader::new(&raw[..]);
+        let head = read_request_head(&mut r).await.unwrap();
+        assert_eq!(head.method, "GET");
+        assert_eq!(head.headers.len(), 1);
+        assert_eq!(head.headers[0].name, "Host");
+        assert_eq!(head.headers[0].value, "localhost:8080");
+    }
+}
+
+fn parse_header_line(line: &str) -> janus_core::Result<HttpHeader> {
+    let raw = line.trim();
+    let (name, value) = raw
+        .split_once(":")
+        .ok_or_else(|| janus_core::Error::Protocol("malformed header".into()))?;
+    Ok(HttpHeader {
+        name: name.trim().to_string(),
+        value: value.trim().to_string(),
+    })
+}
+
+async fn read_request_head<R: AsyncBufRead + Unpin>(
+    reader: &mut R,
+) -> janus_core::Result<HttpRequestHead> {
+    let mut line = String::new();
+    reader.read_line(&mut line).await?;
+    let trimmed = line.trim_end_matches(['\r', '\n']);
+    let mut head = parse_request_line(trimmed)?;
+
+    loop {
+        line.clear();
+        let n = reader.read_line(&mut line).await?;
+        if n == 0 {
+            return Err(janus_core::Error::Protocol(
+                "unexpected eof in headers".into(),
+            ));
+        }
+        let trimmed = line.trim_end_matches(['\r', '\n']);
+        if trimmed.is_empty() {
+            break; // Blank line, meaning end of headers 
+        }
+        head.headers.push(parse_header_line(trimmed)?);
+    }
+
+    Ok(head)
 }
