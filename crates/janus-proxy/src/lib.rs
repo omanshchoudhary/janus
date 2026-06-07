@@ -279,9 +279,9 @@ fn parse_request_line(line: &str) -> janus_core::Result<HttpRequestHead> {
     let method = parts[0];
     let target = parts[1];
     let version = parts[2];
-    
-    validate_target(target)?; 
-    
+
+    validate_target(target)?;
+
     Ok(HttpRequestHead {
         method: method.to_string(),
         target: target.to_string(),
@@ -294,7 +294,7 @@ fn parse_request_line(line: &str) -> janus_core::Result<HttpRequestHead> {
 mod tests {
     use super::{
         content_length, decrement_active_connections, increment_active_connections,
-        parse_request_line, read_request_head,
+        parse_request_line, read_request_head, reject_unsupported,
     };
     use janus_core::{HttpHeader, HttpRequestHead};
     use std::sync::atomic::{AtomicUsize, Ordering};
@@ -386,6 +386,51 @@ mod tests {
         };
         assert!(content_length(&head).is_err());
     }
+
+    fn head_with(headers: Vec<HttpHeader>) -> HttpRequestHead {
+        HttpRequestHead {
+            method: "GET".into(),
+            target: "/".into(),
+            version: "HTTP/1.1".into(),
+            headers,
+        }
+    }
+
+    #[test]
+    fn accepts_plain_request() {
+        let head = head_with(vec![HttpHeader {
+            name: "Host".into(),
+            value: "x".into(),
+        }]);
+        assert!(reject_unsupported(&head).is_ok());
+    }
+
+    #[test]
+    fn rejects_transfer_encoding() {
+        let head = head_with(vec![HttpHeader {
+            name: "Transfer-Encoding".into(),
+            value: "chunked".into(),
+        }]);
+        assert!(reject_unsupported(&head).is_err());
+    }
+
+    #[test]
+    fn rejects_upgrade() {
+        let head = head_with(vec![HttpHeader {
+            name: "Upgrade".into(),
+            value: "websocket".into(),
+        }]);
+        assert!(reject_unsupported(&head).is_err());
+    }
+
+    #[test]
+    fn rejects_transfer_encoding_case_insensitive() {
+        let head = head_with(vec![HttpHeader {
+            name: "transfer-encoding".into(),
+            value: "chunked".into(),
+        }]);
+        assert!(reject_unsupported(&head).is_err());
+    }
 }
 
 fn parse_header_line(line: &str) -> janus_core::Result<HttpHeader> {
@@ -433,13 +478,36 @@ fn validate_target(target: &str) -> janus_core::Result<()> {
 }
 
 fn content_length(head: &HttpRequestHead) -> janus_core::Result<Option<u64>> {
-    let h = head.headers.iter()
+    let h = head
+        .headers
+        .iter()
         .find(|h| h.name.eq_ignore_ascii_case("content-length"));
 
     match h {
         None => Ok(None),
-        Some(h) => h.value.trim().parse::<u64>()
+        Some(h) => h
+            .value
+            .trim()
+            .parse::<u64>()
             .map(Some)
             .map_err(|_| janus_core::Error::Protocol("invalid content-length".into())),
     }
+}
+
+fn reject_unsupported(head: &HttpRequestHead) -> janus_core::Result<()> {
+    let has = |name: &str| {
+        head.headers
+            .iter()
+            .any(|h| h.name.eq_ignore_ascii_case(name))
+    };
+
+    if has("transfer-encoding") {
+        return Err(janus_core::Error::Protocol(
+            "transfer-encoding not supported".into(),
+        ));
+    }
+    if has("upgrade") {
+        return Err(janus_core::Error::Protocol("upgrade not supported".into()));
+    }
+    Ok(())
 }
