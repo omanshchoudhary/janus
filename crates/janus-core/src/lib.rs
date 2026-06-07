@@ -237,4 +237,3 @@ pub struct HttpRequestHead {
     pub version: String,
     pub headers: Vec<HttpHeader>,
 }
-

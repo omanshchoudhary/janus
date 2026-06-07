@@ -5,7 +5,7 @@ use tokio::{
     time::{timeout, Duration},
 };
 
-use janus_core::{Backend, BackendRuntime, HealthStatus, Protocol};
+use janus_core::{Backend, BackendRuntime, HealthStatus, HttpRequestHead, Protocol};
 use std::net::SocketAddr;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::Arc;
@@ -268,9 +268,29 @@ pub fn janus_proxy() -> &'static str {
     "janus-proxy"
 }
 
+fn parse_request_line(line: &str) -> janus_core::Result<HttpRequestHead> {
+    let line = line.trim_end_matches("\r\n");
+
+    let parts: Vec<&str> = line.split(' ').collect();
+
+    if parts.len() != 3 {
+        return Err(janus_core::Error::Protocol("invalid request line".into()));
+    }
+    let method = parts[0];
+    let target = parts[1];
+    let version = parts[2];
+
+    Ok(HttpRequestHead {
+        method: method.to_string(),
+        target: target.to_string(),
+        version: version.to_string(),
+        headers: Vec::new(),
+    })
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{decrement_active_connections, increment_active_connections};
+    use super::{decrement_active_connections, increment_active_connections, parse_request_line};
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     #[test]
@@ -285,5 +305,18 @@ mod tests {
         assert_eq!(second, 2);
         assert_eq!(remaining, 1);
         assert_eq!(active_connections.load(Ordering::Relaxed), 1);
+    }
+
+    #[test]
+    fn parses_a_valid_request_line() {
+        let head = parse_request_line("GET /index.html HTTP/1.1\r\n").unwrap();
+        assert_eq!(head.method, "GET");
+        assert_eq!(head.target, "/index.html");
+        assert_eq!(head.version, "HTTP/1.1");
+    }
+
+    #[test]
+    fn rejects_too_few_tokens() {
+        assert!(parse_request_line("GET /\r\n").is_err());
     }
 }
