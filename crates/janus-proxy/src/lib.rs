@@ -294,7 +294,7 @@ fn parse_request_line(line: &str) -> janus_core::Result<HttpRequestHead> {
 mod tests {
     use super::{
         content_length, decrement_active_connections, increment_active_connections,
-        parse_request_line, read_request_head, reject_unsupported,
+        parse_request_line, read_request_head, reject_unsupported, strip_hop_by_hop,
     };
     use janus_core::{HttpHeader, HttpRequestHead};
     use std::sync::atomic::{AtomicUsize, Ordering};
@@ -431,6 +431,70 @@ mod tests {
         }]);
         assert!(reject_unsupported(&head).is_err());
     }
+
+    fn header_names(head: &HttpRequestHead) -> Vec<String> {
+        head.headers.iter().map(|h| h.name.clone()).collect()
+    }
+
+    #[test]
+    fn strips_hop_by_hop_headers() {
+        let mut head = head_with(vec![
+            HttpHeader {
+                name: "Host".into(),
+                value: "x".into(),
+            },
+            HttpHeader {
+                name: "Connection".into(),
+                value: "keep-alive".into(),
+            },
+            HttpHeader {
+                name: "Proxy-Connection".into(),
+                value: "keep-alive".into(),
+            },
+            HttpHeader {
+                name: "Keep-Alive".into(),
+                value: "timeout=5".into(),
+            },
+            HttpHeader {
+                name: "Transfer-Encoding".into(),
+                value: "chunked".into(),
+            },
+        ]);
+        strip_hop_by_hop(&mut head);
+        assert_eq!(header_names(&head), vec!["Host"]);
+    }
+
+    #[test]
+    fn preserves_ordinary_headers() {
+        let mut head = head_with(vec![
+            HttpHeader {
+                name: "Host".into(),
+                value: "x".into(),
+            },
+            HttpHeader {
+                name: "User-Agent".into(),
+                value: "curl".into(),
+            },
+        ]);
+        strip_hop_by_hop(&mut head);
+        assert_eq!(header_names(&head), vec!["Host", "User-Agent"]);
+    }
+
+    #[test]
+    fn strips_hop_by_hop_case_insensitive() {
+        let mut head = head_with(vec![
+            HttpHeader {
+                name: "Host".into(),
+                value: "x".into(),
+            },
+            HttpHeader {
+                name: "CONNECTION".into(),
+                value: "close".into(),
+            },
+        ]);
+        strip_hop_by_hop(&mut head);
+        assert_eq!(header_names(&head), vec!["Host"]);
+    }
 }
 
 fn parse_header_line(line: &str) -> janus_core::Result<HttpHeader> {
@@ -510,4 +574,18 @@ fn reject_unsupported(head: &HttpRequestHead) -> janus_core::Result<()> {
         return Err(janus_core::Error::Protocol("upgrade not supported".into()));
     }
     Ok(())
+}
+
+fn strip_hop_by_hop(head: &mut HttpRequestHead) {
+    const HOP_BY_HOP: [&str; 4] = [
+        "connection",
+        "proxy-connection",
+        "keep-alive",
+        "transfer-encoding",
+    ];
+    head.headers.retain(|h| {
+        !HOP_BY_HOP
+            .iter()
+            .any(|hbh| h.name.eq_ignore_ascii_case(hbh))
+    });
 }
