@@ -293,9 +293,10 @@ fn parse_request_line(line: &str) -> janus_core::Result<HttpRequestHead> {
 #[cfg(test)]
 mod tests {
     use super::{
-        decrement_active_connections, increment_active_connections, parse_request_line,
-        read_request_head,
+        content_length, decrement_active_connections, increment_active_connections,
+        parse_request_line, read_request_head,
     };
+    use janus_core::{HttpHeader, HttpRequestHead};
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     #[test]
@@ -346,6 +347,45 @@ mod tests {
         assert_eq!(head.headers[0].name, "Host");
         assert_eq!(head.headers[0].value, "localhost:8080");
     }
+
+    #[test]
+    fn content_length_absent_is_none() {
+        let head = HttpRequestHead {
+            method: "GET".into(),
+            target: "/".into(),
+            version: "HTTP/1.1".into(),
+            headers: vec![],
+        };
+        assert_eq!(content_length(&head).unwrap(), None);
+    }
+
+    #[test]
+    fn content_length_parsed_case_insensitive() {
+        let head = HttpRequestHead {
+            method: "POST".into(),
+            target: "/".into(),
+            version: "HTTP/1.1".into(),
+            headers: vec![HttpHeader {
+                name: "content-length".into(),
+                value: "42".into(),
+            }],
+        };
+        assert_eq!(content_length(&head).unwrap(), Some(42));
+    }
+
+    #[test]
+    fn content_length_invalid_is_err() {
+        let head = HttpRequestHead {
+            method: "POST".into(),
+            target: "/".into(),
+            version: "HTTP/1.1".into(),
+            headers: vec![HttpHeader {
+                name: "Content-Length".into(),
+                value: "abc".into(),
+            }],
+        };
+        assert!(content_length(&head).is_err());
+    }
 }
 
 fn parse_header_line(line: &str) -> janus_core::Result<HttpHeader> {
@@ -390,4 +430,16 @@ fn validate_target(target: &str) -> janus_core::Result<()> {
         return Err(janus_core::Error::Protocol("invalid request target".into()));
     }
     Ok(())
+}
+
+fn content_length(head: &HttpRequestHead) -> janus_core::Result<Option<u64>> {
+    let h = head.headers.iter()
+        .find(|h| h.name.eq_ignore_ascii_case("content-length"));
+
+    match h {
+        None => Ok(None),
+        Some(h) => h.value.trim().parse::<u64>()
+            .map(Some)
+            .map_err(|_| janus_core::Error::Protocol("invalid content-length".into())),
+    }
 }
