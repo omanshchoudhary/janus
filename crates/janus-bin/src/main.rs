@@ -17,7 +17,9 @@ async fn main() {
     }
 }
 
+// Execution Starts Here
 async fn run() -> janus_core::Result<()> {
+    // Collecting arguements from cli
     let args: Vec<String> = env::args().collect();
 
     match parse_args(&args) {
@@ -60,6 +62,7 @@ async fn run() -> janus_core::Result<()> {
         }
     }
 }
+
 
 fn parse_args(args: &[String]) -> Result<String, String> {
     let mut config_path = None;

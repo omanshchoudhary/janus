@@ -293,8 +293,9 @@ fn parse_request_line(line: &str) -> janus_core::Result<HttpRequestHead> {
 #[cfg(test)]
 mod tests {
     use super::{
-        content_length, decrement_active_connections, increment_active_connections,
-        parse_request_line, read_request_head, reject_unsupported, strip_hop_by_hop,
+        add_forwarding_headers, content_length, decrement_active_connections,
+        increment_active_connections, parse_request_line, read_request_head, reject_unsupported,
+        strip_hop_by_hop,
     };
     use janus_core::{HttpHeader, HttpRequestHead};
     use std::sync::atomic::{AtomicUsize, Ordering};
@@ -495,6 +496,38 @@ mod tests {
         strip_hop_by_hop(&mut head);
         assert_eq!(header_names(&head), vec!["Host"]);
     }
+
+    fn header_value<'a>(head: &'a HttpRequestHead, name: &str) -> Option<&'a str> {
+        head.headers
+            .iter()
+            .find(|h| h.name.eq_ignore_ascii_case(name))
+            .map(|h| h.value.as_str())
+    }
+
+    #[test]
+    fn adds_forwarding_headers_with_host() {
+        let mut head = head_with(vec![HttpHeader {
+            name: "Host".into(),
+            value: "example.com".into(),
+        }]);
+        let client = "1.2.3.4:5678".parse().unwrap();
+        add_forwarding_headers(&mut head, client);
+
+        assert_eq!(header_value(&head, "X-Forwarded-For"), Some("1.2.3.4"));
+        assert_eq!(header_value(&head, "X-Forwarded-Host"), Some("example.com"));
+        assert_eq!(header_value(&head, "X-Forwarded-Proto"), Some("http"));
+    }
+
+    #[test]
+    fn adds_forwarding_headers_without_host() {
+        let mut head = head_with(vec![]);
+        let client = "1.2.3.4:5678".parse().unwrap();
+        add_forwarding_headers(&mut head, client);
+
+        assert_eq!(header_value(&head, "X-Forwarded-For"), Some("1.2.3.4"));
+        assert_eq!(header_value(&head, "X-Forwarded-Proto"), Some("http"));
+        assert_eq!(header_value(&head, "X-Forwarded-Host"), None);
+    }
 }
 
 fn parse_header_line(line: &str) -> janus_core::Result<HttpHeader> {
@@ -587,5 +620,29 @@ fn strip_hop_by_hop(head: &mut HttpRequestHead) {
         !HOP_BY_HOP
             .iter()
             .any(|hbh| h.name.eq_ignore_ascii_case(hbh))
+    });
+}
+
+// Adding forward headers to the connection request before passing it to the backend
+fn add_forwarding_headers(head: &mut HttpRequestHead, client_address: SocketAddr) {
+    head.headers.push(HttpHeader {
+        name: "X-Forwarded-For".into(),
+        value: client_address.ip().to_string(),
+    });
+
+    if let Some(host) = head
+        .headers
+        .iter()
+        .find(|h| h.name.eq_ignore_ascii_case("host"))
+        .map(|h| h.value.clone())
+    {
+        head.headers.push(HttpHeader {
+            name: "X-Forwarded-Host".into(),
+            value: host,
+        });
+    }
+    head.headers.push(HttpHeader {
+        name: "X-Forwarded-Proto".into(),
+        value: "http".into(),
     });
 }
