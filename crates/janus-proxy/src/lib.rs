@@ -295,7 +295,7 @@ mod tests {
     use super::{
         add_forwarding_headers, content_length, decrement_active_connections,
         increment_active_connections, parse_request_line, read_request_head, reject_unsupported,
-        strip_hop_by_hop,
+        serialize_request_head, strip_hop_by_hop,
     };
     use janus_core::{HttpHeader, HttpRequestHead};
     use std::sync::atomic::{AtomicUsize, Ordering};
@@ -528,6 +528,18 @@ mod tests {
         assert_eq!(header_value(&head, "X-Forwarded-Proto"), Some("http"));
         assert_eq!(header_value(&head, "X-Forwarded-Host"), None);
     }
+
+    #[test]
+    fn serializes_request_head() {
+        let head = head_with(vec![HttpHeader {
+            name: "Host".into(),
+            value: "x".into(),
+        }]);
+        assert_eq!(
+            serialize_request_head(&head),
+            "GET / HTTP/1.1\r\nHost: x\r\n\r\n"
+        );
+    }
 }
 
 fn parse_header_line(line: &str) -> janus_core::Result<HttpHeader> {
@@ -645,4 +657,23 @@ fn add_forwarding_headers(head: &mut HttpRequestHead, client_address: SocketAddr
         name: "X-Forwarded-Proto".into(),
         value: "http".into(),
     });
+}
+
+// After parsing the incoming client request, and modifying it, it's time to send back to the backend in the original format.
+fn serialize_request_head(head: &HttpRequestHead) -> String {
+    let mut out = String::new();
+
+    out.push_str(&format!(
+        "{} {} {}\r\n",
+        head.method, head.target, head.version
+    ));
+    head.headers.iter().for_each(|header| {
+        out.push_str(&header.name);
+        out.push_str(": ");
+        out.push_str(&header.value);
+        out.push_str("\r\n");
+    });
+
+    out.push_str("\r\n");
+    out
 }
