@@ -1,6 +1,6 @@
 use janus_balancer::{BackendCandidate, LoadBalancer, RoundRobinBalancer, SelectionContext};
 use tokio::{
-    io::{AsyncBufRead, AsyncBufReadExt, AsyncWriteExt},
+    io::{AsyncBufRead, AsyncBufReadExt, AsyncWriteExt, BufReader},
     net::{TcpListener, TcpStream},
     time::{timeout, Duration},
 };
@@ -244,6 +244,41 @@ async fn handle_tcp_connection(
 
     let _ = client_socket.shutdown().await;
 
+    let current = decrement_active_connections(active_connections.as_ref());
+    tracing::info!(
+        connection_id = connection_id.0,
+        %peer_addr,
+        active_connections = current,
+        "closed connection"
+    );
+}
+
+// Http connection handler
+async fn handle_http_connection(
+    client_socket: TcpStream,
+    connection_id: ConnectionId,
+    peer_addr: SocketAddr,
+    active_connections: Arc<AtomicUsize>,
+    backend_runtime: Arc<BackendRuntime>,
+    _metrics: Arc<ProxyMetrics>,
+) {
+    let _connection_guard = backend_runtime.begin_connection();
+    let mut reader = BufReader::new(client_socket);
+    match read_request_head(&mut reader).await {
+        Err(error) => {
+            tracing::error!(
+                connection_id = connection_id.0,
+                %peer_addr,
+                %error,
+                "failed to read request head"
+            );
+        }
+        Ok(head) => {
+            tracing::info!(method = %head.method, target = %head.target, "parsed request");
+        }
+    }
+
+    let _ = reader.get_mut().shutdown().await;
     let current = decrement_active_connections(active_connections.as_ref());
     tracing::info!(
         connection_id = connection_id.0,
