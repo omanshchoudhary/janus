@@ -120,21 +120,17 @@ pub async fn serve_tcp_listener_multi(
                             )
                             .await;
                         }
+                        
                         Protocol::Http1 => {
-                            tracing::warn!(
-                                connection_id = connection_id.0,
-                                %addr,
-                                "HTTP/1.1 proxying is not implemented yet"
-                            );
-                            let _ = socket.shutdown().await;
-                            let current =
-                                decrement_active_connections(active_connections_for_task.as_ref());
-                            tracing::info!(
-                                connection_id = connection_id.0,
-                                %addr,
-                                active_connections = current,
-                                "closed connection"
-                            );
+                            handle_http_connection(
+                                socket,
+                                connection_id,
+                                addr,
+                                active_connections_for_task,
+                                backend_runtime_for_task,
+                                metrics_for_task,
+                            )
+                            .await;
                         }
                     }
                 });

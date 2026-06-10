@@ -63,7 +63,6 @@ async fn run() -> janus_core::Result<()> {
     }
 }
 
-
 fn parse_args(args: &[String]) -> Result<String, String> {
     let mut config_path = None;
     let mut iter = args.iter().skip(1);
