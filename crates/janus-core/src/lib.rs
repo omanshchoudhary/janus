@@ -134,7 +134,7 @@ impl BackendRuntime {
         self.active_connections.fetch_add(1, Ordering::Relaxed);
         self.total_connections.fetch_add(1, Ordering::Relaxed);
         ActiveConnectionGuard {
-            backend: Arc::clone(self),
+            runtime: Arc::clone(self),
         }
     }
 
@@ -179,12 +179,12 @@ pub struct BackendSnapshot {
 }
 
 pub struct ActiveConnectionGuard {
-    backend: Arc<BackendRuntime>,
+    runtime: Arc<BackendRuntime>,
 }
 
 impl Drop for ActiveConnectionGuard {
     fn drop(&mut self) {
-        self.backend
+        self.runtime
             .active_connections
             .fetch_sub(1, Ordering::Relaxed);
     }
