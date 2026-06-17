@@ -11,7 +11,8 @@ pub fn janus_config() -> &'static str {
 pub struct JanusConfig {
     pub services: Vec<ServiceConfig>,
 }
-// One service can handle multiple backends.
+
+// One service can pool multiple backends
 #[derive(Debug, Deserialize)]
 pub struct ServiceConfig {
     pub name: String,
@@ -21,7 +22,7 @@ pub struct ServiceConfig {
 }
 
 #[derive(Debug, Deserialize)]
-pub struct Backend {
+pub struct Backend { // Simple types because that's what serde reads straight out of the file
     pub id: String,
     pub address: SocketAddr,
     pub weight: u32,

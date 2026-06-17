@@ -1,5 +1,5 @@
 #![deny(clippy::all)]
-#![warn(clippy::pedantic)]
+#![warn(clippy::pedantic)] // pedantic lints surface as warnings only (not enforced)
 
 use std::{
     net::SocketAddr,
@@ -9,10 +9,10 @@ use std::{
     },
 };
 
-// Error Types
+// Custom Error Types
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
-    #[error("I/O error: {0}")]
+    #[error("I/O error: {0}")] // Error msgs for this error
     Io(#[from] std::io::Error),
 
     #[error("Configuration error: {0}")]
@@ -39,15 +39,15 @@ pub type Result<T> = std::result::Result<T, Error>;
 #[serde(rename_all = "lowercase")]
 pub enum Protocol {
     Tcp,
-    #[serde(alias = "http")]
+    #[serde(alias = "http")] // http will also be declared as Http1
     Http1,
 }
 
-// Backend Identity
+// Backend Id
 #[derive(Debug, Clone)]
 pub struct BackendId(pub String);
 
-// Backend Address
+// Backend IP Address
 #[derive(Debug, Clone)]
 pub struct BackendAddress(pub SocketAddr);
 
@@ -106,7 +106,7 @@ impl BackendRuntime {
     }
 
     pub fn health(&self) -> HealthStatus {
-        *self
+        *self // reference isn't saved to a variable that's why the lock instantly snaps shut at the end of line
             .health
             .read()
             .expect("Failed to acquire read lock on backend health status")
