@@ -1,6 +1,6 @@
 use janus_balancer::{BackendCandidate, LoadBalancer, RoundRobinBalancer, SelectionContext};
 use tokio::{
-    io::{AsyncBufRead, AsyncBufReadExt, AsyncWriteExt, BufReader},
+    io::{AsyncBufRead, AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader},
     net::{TcpListener, TcpStream},
     time::{timeout, Duration},
 };
@@ -10,7 +10,7 @@ use std::net::SocketAddr;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::Arc;
 
-// Bytes-in and bytes-out metrics placeholders.
+// Bytes-in and bytes-out metrics placeholders for overall proxy
 pub struct ProxyMetrics {
     pub bytes_in: AtomicU64,
     pub bytes_out: AtomicU64,
@@ -21,6 +21,7 @@ pub struct ListenerConfig {
     pub listen_addr: SocketAddr,
 }
 
+// Unique id for a single client connection to the proxy
 pub struct ConnectionId(pub u64);
 
 fn increment_active_connections(active_connections: &AtomicUsize) -> usize {
@@ -34,7 +35,7 @@ fn decrement_active_connections(active_connections: &AtomicUsize) -> usize {
 // Bind our tcp listener to a port.
 pub async fn run_tcp_listener(config: ListenerConfig, backend: Backend) -> janus_core::Result<()> {
     let listener = TcpListener::bind(config.listen_addr).await?;
-    tracing::info!("Listener started");
+    tracing::info!(listen_addr = %config.listen_addr, "listener started");
     serve_tcp_listener(listener, backend).await
 }
 
@@ -50,7 +51,7 @@ pub async fn run_tcp_listener_multi(
     protocol: Protocol,
 ) -> janus_core::Result<()> {
     let listener = TcpListener::bind(config.listen_addr).await?;
-    tracing::info!("Listener started");
+    tracing::info!(listen_addr = %config.listen_addr, "listener started");
     serve_tcp_listener_multi(listener, backends, balancer, protocol).await
 }
 
@@ -77,7 +78,7 @@ pub async fn serve_tcp_listener_multi(
         .collect();
 
     loop {
-        match listener.accept().await {
+        match listener.accept().await { // Accepting client connections
             // addr is the client address
             Ok((mut socket, addr)) => {
                 let ctx = SelectionContext {
@@ -103,11 +104,14 @@ pub async fn serve_tcp_listener_multi(
                     "accepted connection"
                 );
 
+                // These are moved to the spawn block
+                // So the task owns its clone, the loop owns its original, both point to the same data.
                 let active_connections_for_task = Arc::clone(&active_connections);
                 let metrics_for_task = metrics.clone();
                 let backend_runtime_for_task = Arc::clone(&selected.runtime);
 
-                tokio::spawn(async move {
+                tokio::spawn(async move { // tokio::spawn` is fire‑and‑forget
+                   // It schedules the task and returns immediately. The loop keeps going to the next `accept().await`; the handler runs independently in the runtime.
                     match protocol {
                         Protocol::Tcp => {
                             handle_tcp_connection(
@@ -120,7 +124,7 @@ pub async fn serve_tcp_listener_multi(
                             )
                             .await;
                         }
-                        
+
                         Protocol::Http1 => {
                             handle_http_connection(
                                 socket,
@@ -260,19 +264,93 @@ async fn handle_http_connection(
 ) {
     let _connection_guard = backend_runtime.begin_connection();
     let mut reader = BufReader::new(client_socket);
-    match read_request_head(&mut reader).await {
+    let mut head = match read_request_head(&mut reader).await {
+        Ok(head) => head,
+        Err(error) => {
+            tracing::error!(connection_id = connection_id.0, %peer_addr, %error, "failed to read request head");
+            let _ = reader.get_mut().shutdown().await;
+            let current = decrement_active_connections(active_connections.as_ref());
+            tracing::info!(connection_id = connection_id.0, %peer_addr, active_connections = current, "closed connection");
+            return;
+        }
+    };
+
+    if let Err(error) = reject_unsupported(&head) {
+        tracing::error!(connection_id = connection_id.0, %peer_addr, %error, "unsupported request");
+        let _ = reader.get_mut().shutdown().await;
+        let current = decrement_active_connections(active_connections.as_ref());
+        tracing::info!(connection_id = connection_id.0, %peer_addr, active_connections = current, "closed connection");
+        return;
+    }
+    strip_hop_by_hop(&mut head);
+    add_forwarding_headers(&mut head, peer_addr);
+    let backend = backend_runtime.backend();
+    tracing::info!(
+        connection_id = connection_id.0,
+        %peer_addr,
+        backend_id = %backend.id.0,
+        backend_addr = %backend.address.0,
+        "connecting to backend"
+    );
+
+    let mut backend_socket = match connect_backend(backend, Duration::from_secs(2)).await {
+        Ok(stream) => stream,
         Err(error) => {
             tracing::error!(
                 connection_id = connection_id.0,
                 %peer_addr,
+                backend_id = %backend.id.0,
                 %error,
-                "failed to read request head"
+                "failed to connect to backend"
             );
+            backend_runtime.record_failure();
+            let _ = reader.get_mut().shutdown().await;
+            let current = decrement_active_connections(active_connections.as_ref());
+            tracing::info!(connection_id = connection_id.0, %peer_addr, active_connections = current, "closed connection");
+            return;
         }
-        Ok(head) => {
-            tracing::info!(method = %head.method, target = %head.target, "parsed request");
+    };
+
+    if let Err(error) = backend_socket
+        .write_all(serialize_request_head(&head).as_bytes())
+        .await
+    {
+        tracing::error!(connection_id = connection_id.0, %peer_addr, %error, "failed to write request to backend");
+        backend_runtime.record_failure();
+        let _ = reader.get_mut().shutdown().await;
+        let current = decrement_active_connections(active_connections.as_ref());
+        tracing::info!(connection_id = connection_id.0, %peer_addr, active_connections = current, "closed connection");
+        return;
+    }
+
+    match content_length(&head) {
+        Ok(Some(n)) if n > 0 => {
+            let mut body = (&mut reader).take(n);
+            if let Err(error) = tokio::io::copy(&mut body, &mut backend_socket).await {
+                tracing::error!(connection_id = connection_id.0, %peer_addr, %error, "failed to copy request body");
+                backend_runtime.record_failure();
+                let _ = reader.get_mut().shutdown().await;
+                let current = decrement_active_connections(active_connections.as_ref());
+                tracing::info!(connection_id = connection_id.0, %peer_addr, active_connections = current, "closed connection");
+                return;
+            }
+        }
+        Ok(_) => {}
+        Err(error) => {
+            tracing::error!(connection_id = connection_id.0, %peer_addr, %error, "invalid content-length");
+            let _ = reader.get_mut().shutdown().await;
+            let current = decrement_active_connections(active_connections.as_ref());
+            tracing::info!(connection_id = connection_id.0, %peer_addr, active_connections = current, "closed connection");
+            return;
         }
     }
+
+    tracing::info!(
+        connection_id = connection_id.0,
+        %peer_addr,
+        backend_id = %backend.id.0,
+        "forwarded request to backend"
+    );
 
     let _ = reader.get_mut().shutdown().await;
     let current = decrement_active_connections(active_connections.as_ref());
