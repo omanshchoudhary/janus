@@ -7,7 +7,7 @@
 # ------------------------------------------
 # Exposes internal health, metrics, and configurations over HTTP.
 [admin]
-listen = "127.0.0.1:9090"
+listen_addr = "127.0.0.1:9090"
 metrics_enabled = true
 
 # ------------------------------------------
@@ -16,7 +16,7 @@ metrics_enabled = true
 # A list of proxy services that Janus will run concurrently.
 [[services]]
 name = "my-http-web-service"
-listen = "127.0.0.1:8080"
+listen_addr = "127.0.0.1:8080"
 protocol = "http1"         # Can be "tcp" or "http1"
 balance = "round_robin"   # "round_robin", "least_connections", "weighted_round_robin", "ip_hash"
 
@@ -69,7 +69,7 @@ weight = 5
 # ------------------------------------------
 [[services]]
 name = "my-tcp-db-service"
-listen = "127.0.0.1:5432"
+listen_addr = "127.0.0.1:5432"
 protocol = "tcp"
 balance = "least_connections"
 
