@@ -22,7 +22,8 @@ pub struct ServiceConfig {
 }
 
 #[derive(Debug, Deserialize)]
-pub struct Backend { // Simple types because that's what serde reads straight out of the file
+pub struct Backend {
+    // Simple types because that's what serde reads straight out of the file
     pub id: String,
     pub address: SocketAddr,
     pub weight: u32,

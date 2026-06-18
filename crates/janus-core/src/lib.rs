@@ -237,3 +237,11 @@ pub struct HttpRequestHead {
     pub version: String,
     pub headers: Vec<HttpHeader>,
 }
+
+#[derive(Debug, Clone)]
+pub struct HttpResponseHead {
+    pub version: String,
+    pub status: u16,
+    pub reason: String,
+    pub headers: Vec<HttpHeader>,
+}

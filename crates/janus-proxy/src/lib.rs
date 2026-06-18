@@ -5,7 +5,9 @@ use tokio::{
     time::{timeout, Duration},
 };
 
-use janus_core::{Backend, BackendRuntime, HealthStatus, HttpHeader, HttpRequestHead, Protocol};
+use janus_core::{
+    Backend, BackendRuntime, HealthStatus, HttpHeader, HttpRequestHead, HttpResponseHead, Protocol,
+};
 use std::net::SocketAddr;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::Arc;
@@ -78,7 +80,8 @@ pub async fn serve_tcp_listener_multi(
         .collect();
 
     loop {
-        match listener.accept().await { // Accepting client connections
+        match listener.accept().await {
+            // Accepting client connections
             // addr is the client address
             Ok((mut socket, addr)) => {
                 let ctx = SelectionContext {
@@ -110,8 +113,9 @@ pub async fn serve_tcp_listener_multi(
                 let metrics_for_task = metrics.clone();
                 let backend_runtime_for_task = Arc::clone(&selected.runtime);
 
-                tokio::spawn(async move { // tokio::spawn` is fire‑and‑forget
-                   // It schedules the task and returns immediately. The loop keeps going to the next `accept().await`; the handler runs independently in the runtime.
+                tokio::spawn(async move {
+                    // tokio::spawn` is fire‑and‑forget
+                    // It schedules the task and returns immediately. The loop keeps going to the next `accept().await`; the handler runs independently in the runtime.
                     match protocol {
                         Protocol::Tcp => {
                             handle_tcp_connection(
@@ -399,12 +403,37 @@ fn parse_request_line(line: &str) -> janus_core::Result<HttpRequestHead> {
     })
 }
 
+fn parse_response_line(line: &str) -> janus_core::Result<HttpResponseHead> {
+    let line = line.trim_end_matches(['\r', '\n']);
+
+    let mut parts = line.splitn(3, ' ');
+    let version = parts.next();
+    let code = parts.next();
+    let reason = parts.next().unwrap_or(""); // empty reason is valid
+
+    let (version, code) = match (version, code) {
+        (Some(v), Some(c)) => (v, c),
+        _ => return Err(janus_core::Error::Protocol("invalid status line".into())),
+    };
+
+    let status = code
+        .parse::<u16>()
+        .map_err(|_| janus_core::Error::Protocol("invalid status code".into()))?;
+
+    Ok(HttpResponseHead {
+        version: version.to_string(),
+        status,
+        reason: reason.to_string(),
+        headers: Vec::new(),
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
         add_forwarding_headers, content_length, decrement_active_connections,
-        increment_active_connections, parse_request_line, read_request_head, reject_unsupported,
-        serialize_request_head, strip_hop_by_hop,
+        increment_active_connections, parse_request_line, parse_response_line, read_request_head,
+        read_response_head, reject_unsupported, serialize_request_head, strip_hop_by_hop,
     };
     use janus_core::{HttpHeader, HttpRequestHead};
     use std::sync::atomic::{AtomicUsize, Ordering};
@@ -649,6 +678,35 @@ mod tests {
             "GET / HTTP/1.1\r\nHost: x\r\n\r\n"
         );
     }
+
+    #[test]
+    fn parses_a_valid_response_line() {
+        let head = parse_response_line("HTTP/1.1 200 OK").unwrap();
+        assert_eq!(head.version, "HTTP/1.1");
+        assert_eq!(head.status, 200);
+        assert_eq!(head.reason, "OK");
+    }
+
+    #[test]
+    fn parses_a_response_line_with_empty_reason() {
+        let head = parse_response_line("HTTP/1.1 204 ").unwrap();
+        assert_eq!(head.status, 204);
+        assert_eq!(head.reason, "");
+    }
+
+    #[test]
+    fn rejects_a_response_line_with_invalid_status_code() {
+        assert!(parse_response_line("HTTP/1.1 abc OK").is_err());
+    }
+
+    #[tokio::test]
+    async fn reads_a_response_head_with_status_and_headers() {
+        let raw = b"HTTP/1.1 200 OK\r\nContent-Length: 5\r\nServer: janus\r\n\r\n";
+        let mut reader = tokio::io::BufReader::new(&raw[..]);
+        let head = read_response_head(&mut reader).await.unwrap();
+        assert_eq!(head.status, 200);
+        assert_eq!(head.headers.len(), 2);
+    }
 }
 
 fn parse_header_line(line: &str) -> janus_core::Result<HttpHeader> {
@@ -669,6 +727,32 @@ async fn read_request_head<R: AsyncBufRead + Unpin>(
     reader.read_line(&mut line).await?;
     let trimmed = line.trim_end_matches(['\r', '\n']);
     let mut head = parse_request_line(trimmed)?;
+
+    loop {
+        line.clear();
+        let n = reader.read_line(&mut line).await?;
+        if n == 0 {
+            return Err(janus_core::Error::Protocol(
+                "unexpected eof in headers".into(),
+            ));
+        }
+        let trimmed = line.trim_end_matches(['\r', '\n']);
+        if trimmed.is_empty() {
+            break; // Blank line, meaning end of headers
+        }
+        head.headers.push(parse_header_line(trimmed)?);
+    }
+
+    Ok(head)
+}
+
+async fn read_response_head<R: AsyncBufRead + Unpin>(
+    reader: &mut R,
+) -> janus_core::Result<HttpResponseHead> {
+    let mut line = String::new();
+    reader.read_line(&mut line).await?;
+    let trimmed = line.trim_end_matches(['\r', '\n']);
+    let mut head = parse_response_line(trimmed)?;
 
     loop {
         line.clear();
