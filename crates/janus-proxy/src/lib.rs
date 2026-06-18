@@ -257,6 +257,18 @@ async fn handle_tcp_connection(
     );
 }
 
+// Shuts the client stream down, releases the active-connection count, and logs closure.
+async fn close_connection(
+    client_stream: &mut TcpStream,
+    connection_id: u64,
+    peer_addr: SocketAddr,
+    active_connections: &AtomicUsize,
+) {
+    let _ = client_stream.shutdown().await;
+    let current = decrement_active_connections(active_connections);
+    tracing::info!(connection_id, %peer_addr, active_connections = current, "closed connection");
+}
+
 // Http connection handler
 async fn handle_http_connection(
     client_socket: TcpStream,
@@ -267,23 +279,19 @@ async fn handle_http_connection(
     _metrics: Arc<ProxyMetrics>,
 ) {
     let _connection_guard = backend_runtime.begin_connection();
-    let mut reader = BufReader::new(client_socket);
-    let mut head = match read_request_head(&mut reader).await {
+    let mut client_reader = BufReader::new(client_socket);
+    let mut head = match read_request_head(&mut client_reader).await {
         Ok(head) => head,
         Err(error) => {
             tracing::error!(connection_id = connection_id.0, %peer_addr, %error, "failed to read request head");
-            let _ = reader.get_mut().shutdown().await;
-            let current = decrement_active_connections(active_connections.as_ref());
-            tracing::info!(connection_id = connection_id.0, %peer_addr, active_connections = current, "closed connection");
+            close_connection(client_reader.get_mut(), connection_id.0, peer_addr, active_connections.as_ref()).await;
             return;
         }
     };
 
     if let Err(error) = reject_unsupported(&head) {
         tracing::error!(connection_id = connection_id.0, %peer_addr, %error, "unsupported request");
-        let _ = reader.get_mut().shutdown().await;
-        let current = decrement_active_connections(active_connections.as_ref());
-        tracing::info!(connection_id = connection_id.0, %peer_addr, active_connections = current, "closed connection");
+        close_connection(client_reader.get_mut(), connection_id.0, peer_addr, active_connections.as_ref()).await;
         return;
     }
     strip_hop_by_hop(&mut head);
@@ -308,9 +316,7 @@ async fn handle_http_connection(
                 "failed to connect to backend"
             );
             backend_runtime.record_failure();
-            let _ = reader.get_mut().shutdown().await;
-            let current = decrement_active_connections(active_connections.as_ref());
-            tracing::info!(connection_id = connection_id.0, %peer_addr, active_connections = current, "closed connection");
+            close_connection(client_reader.get_mut(), connection_id.0, peer_addr, active_connections.as_ref()).await;
             return;
         }
     };
@@ -321,30 +327,24 @@ async fn handle_http_connection(
     {
         tracing::error!(connection_id = connection_id.0, %peer_addr, %error, "failed to write request to backend");
         backend_runtime.record_failure();
-        let _ = reader.get_mut().shutdown().await;
-        let current = decrement_active_connections(active_connections.as_ref());
-        tracing::info!(connection_id = connection_id.0, %peer_addr, active_connections = current, "closed connection");
+        close_connection(client_reader.get_mut(), connection_id.0, peer_addr, active_connections.as_ref()).await;
         return;
     }
 
-    match content_length(&head) {
+    match content_length(&head.headers) {
         Ok(Some(n)) if n > 0 => {
-            let mut body = (&mut reader).take(n);
+            let mut body = (&mut client_reader).take(n);
             if let Err(error) = tokio::io::copy(&mut body, &mut backend_socket).await {
                 tracing::error!(connection_id = connection_id.0, %peer_addr, %error, "failed to copy request body");
                 backend_runtime.record_failure();
-                let _ = reader.get_mut().shutdown().await;
-                let current = decrement_active_connections(active_connections.as_ref());
-                tracing::info!(connection_id = connection_id.0, %peer_addr, active_connections = current, "closed connection");
+                close_connection(client_reader.get_mut(), connection_id.0, peer_addr, active_connections.as_ref()).await;
                 return;
             }
         }
         Ok(_) => {}
         Err(error) => {
             tracing::error!(connection_id = connection_id.0, %peer_addr, %error, "invalid content-length");
-            let _ = reader.get_mut().shutdown().await;
-            let current = decrement_active_connections(active_connections.as_ref());
-            tracing::info!(connection_id = connection_id.0, %peer_addr, active_connections = current, "closed connection");
+            close_connection(client_reader.get_mut(), connection_id.0, peer_addr, active_connections.as_ref()).await;
             return;
         }
     }
@@ -356,14 +356,46 @@ async fn handle_http_connection(
         "forwarded request to backend"
     );
 
-    let _ = reader.get_mut().shutdown().await;
-    let current = decrement_active_connections(active_connections.as_ref());
-    tracing::info!(
-        connection_id = connection_id.0,
-        %peer_addr,
-        active_connections = current,
-        "closed connection"
-    );
+    let mut backend_reader = BufReader::new(backend_socket);
+
+    let response_head = match read_response_head(&mut backend_reader).await {
+        Ok(h) => h,
+        Err(error) => {
+            tracing::error!(connection_id = connection_id.0, %peer_addr, %error, "failed to read response head");
+            backend_runtime.record_failure();
+            close_connection(client_reader.get_mut(), connection_id.0, peer_addr, active_connections.as_ref()).await;
+            return;
+        }
+    };
+
+    if let Err(error) = client_reader
+        .get_mut()
+        .write_all(serialize_response_head(&response_head).as_bytes())
+        .await
+    {
+        tracing::error!(connection_id = connection_id.0, %peer_addr, %error, "failed to write response head to client");
+        close_connection(client_reader.get_mut(), connection_id.0, peer_addr, active_connections.as_ref()).await;
+        return;
+    }
+
+    let copy_result = match content_length(&response_head.headers) {
+        Ok(Some(n)) if n > 0 => {
+            let mut body = (&mut backend_reader).take(n);
+            tokio::io::copy(&mut body, client_reader.get_mut()).await
+        }
+        Ok(_) => tokio::io::copy(&mut backend_reader, client_reader.get_mut()).await,
+        Err(error) => {
+            tracing::error!(connection_id = connection_id.0, %peer_addr, %error, "invalid response content-length");
+            close_connection(client_reader.get_mut(), connection_id.0, peer_addr, active_connections.as_ref()).await;
+            return;
+        }
+    };
+
+    if let Err(error) = copy_result {
+        tracing::error!(connection_id = connection_id.0, %peer_addr, %error, "failed to copy response body");
+    }
+
+    close_connection(client_reader.get_mut(), connection_id.0, peer_addr, active_connections.as_ref()).await;
 }
 
 async fn connect_backend(
@@ -495,7 +527,7 @@ mod tests {
             version: "HTTP/1.1".into(),
             headers: vec![],
         };
-        assert_eq!(content_length(&head).unwrap(), None);
+        assert_eq!(content_length(&head.headers).unwrap(), None);
     }
 
     #[test]
@@ -509,7 +541,7 @@ mod tests {
                 value: "42".into(),
             }],
         };
-        assert_eq!(content_length(&head).unwrap(), Some(42));
+        assert_eq!(content_length(&head.headers).unwrap(), Some(42));
     }
 
     #[test]
@@ -523,7 +555,7 @@ mod tests {
                 value: "abc".into(),
             }],
         };
-        assert!(content_length(&head).is_err());
+        assert!(content_length(&head.headers).is_err());
     }
 
     fn head_with(headers: Vec<HttpHeader>) -> HttpRequestHead {
@@ -779,9 +811,9 @@ fn validate_target(target: &str) -> janus_core::Result<()> {
     Ok(())
 }
 
-fn content_length(head: &HttpRequestHead) -> janus_core::Result<Option<u64>> {
-    let h = head
-        .headers
+// Handles both req and res
+fn content_length(headers: &[HttpHeader]) -> janus_core::Result<Option<u64>> {
+    let h = headers
         .iter()
         .find(|h| h.name.eq_ignore_ascii_case("content-length"));
 
@@ -867,6 +899,23 @@ fn serialize_request_head(head: &HttpRequestHead) -> String {
         out.push_str("\r\n");
     });
 
+    out.push_str("\r\n");
+    out
+}
+
+fn serialize_response_head(head: &HttpResponseHead) -> String {
+    let mut out = String::new();
+    out.push_str(&format!(
+        "{} {} {}\r\n",
+        head.version, head.status, head.reason
+    ));
+
+    head.headers.iter().for_each(|header| {
+        out.push_str(&header.name);
+        out.push_str(": ");
+        out.push_str(&header.value);
+        out.push_str("\r\n");
+    });
     out.push_str("\r\n");
     out
 }
