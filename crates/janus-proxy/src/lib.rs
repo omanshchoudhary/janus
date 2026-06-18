@@ -16,6 +16,24 @@ use std::sync::Arc;
 pub struct ProxyMetrics {
     pub bytes_in: AtomicU64,
     pub bytes_out: AtomicU64,
+    pub responses_1xx: AtomicU64,
+    pub responses_2xx: AtomicU64,
+    pub responses_3xx: AtomicU64,
+    pub responses_4xx: AtomicU64,
+    pub responses_5xx: AtomicU64,
+}
+
+impl ProxyMetrics {
+    fn record_status(&self, status: u16) {
+        let counter = match status / 100 {
+            1 => &self.responses_1xx,
+            2 => &self.responses_2xx,
+            3 => &self.responses_3xx,
+            4 => &self.responses_4xx,
+            _ => &self.responses_5xx, 
+        };
+        counter.fetch_add(1, Ordering::Relaxed);
+    }
 }
 
 // Janus server's listening address.
@@ -66,6 +84,11 @@ pub async fn serve_tcp_listener_multi(
     let metrics = Arc::new(ProxyMetrics {
         bytes_in: AtomicU64::new(0),
         bytes_out: AtomicU64::new(0),
+        responses_1xx: AtomicU64::new(0),
+        responses_2xx: AtomicU64::new(0),
+        responses_3xx: AtomicU64::new(0),
+        responses_4xx: AtomicU64::new(0),
+        responses_5xx: AtomicU64::new(0),
     });
 
     let mut next_connection_id = 0u64;
@@ -276,7 +299,7 @@ async fn handle_http_connection(
     peer_addr: SocketAddr,
     active_connections: Arc<AtomicUsize>,
     backend_runtime: Arc<BackendRuntime>,
-    _metrics: Arc<ProxyMetrics>,
+    metrics: Arc<ProxyMetrics>,
 ) {
     let _connection_guard = backend_runtime.begin_connection();
     let mut client_reader = BufReader::new(client_socket);
@@ -367,6 +390,15 @@ async fn handle_http_connection(
             return;
         }
     };
+
+    metrics.record_status(response_head.status);
+    tracing::info!(
+        connection_id = connection_id.0,
+        %peer_addr,
+        backend_id = %backend.id.0,
+        status = response_head.status,
+        "received response from backend"
+    );
 
     if let Err(error) = client_reader
         .get_mut()
