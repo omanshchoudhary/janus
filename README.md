@@ -10,11 +10,12 @@ Janus is a Rust workspace for learning how to build a low-level TCP and HTTP/1.1
 
 ## Current Status
 
-Janus has a working TCP data plane. It accepts client connections, selects a
-backend through a pluggable load-balancing strategy, and forwards traffic while
-tracking per-backend runtime state. HTTP/1.1 support is in progress: the
-request-head parsing and header-handling primitives are in place, ahead of
-wiring them into a full reverse-proxy path.
+Janus has a working TCP data plane and an HTTP/1.1 reverse proxy. It accepts
+client connections, selects a backend through a pluggable load-balancing
+strategy, and forwards traffic while tracking per-backend runtime state. On the
+HTTP path it parses the request, rewrites headers, forwards the request to the
+selected backend, and relays the response back to the client over a single
+request/response exchange.
 
 ### Implemented
 
@@ -35,17 +36,22 @@ wiring them into a full reverse-proxy path.
   connection logging, and bytes-in/bytes-out metric counters.
 - A per-service protocol mode (`tcp` or `http1`) selected at the listener,
   reusing the same balancing engine for both paths.
-- HTTP/1.1 request-head primitives in `janus-proxy`: reading the request head
-  from a buffered stream, parsing the request line and headers, origin-form
-  target validation, `Content-Length` parsing, rejection of unsupported
-  requests (chunked bodies and protocol upgrades), and hop-by-hop header
-  stripping.
+- An HTTP/1.1 reverse proxy in `janus-proxy`: reading the request head from a
+  buffered stream, parsing the request line and headers, origin-form target
+  validation, `Content-Length` parsing, rejection of unsupported requests
+  (chunked bodies and protocol upgrades), hop-by-hop header stripping, and
+  `X-Forwarded-For`/`-Host`/`-Proto` injection. The request and its body are
+  forwarded to the selected backend, and the parsed response head and body are
+  relayed back to the client, with response status-class counters
+  (`1xx`–`5xx`). Connections close after a single exchange; a client keep-alive
+  loop is not yet implemented.
 - A TOML configuration loader in `janus-config`.
 - Config-path argument parsing in `janus-bin`, with a `--help` smoke test.
 - An example configuration at `configs/janus.example.toml` and formatting and
   lint conventions in `docs/conventions.md` and `.rustfmt.toml`.
-- Unit tests for the balancing algorithms and connection counters, plus TCP
-  echo and load-balancing integration tests in `janus-proxy`.
+- Unit tests for the balancing algorithms, connection counters, and HTTP
+  request/response parsing, plus TCP echo, load-balancing, and HTTP
+  reverse-proxy integration tests in `janus-proxy`.
 
 ## Workspace Crates
 
@@ -55,7 +61,7 @@ wiring them into a full reverse-proxy path.
 | `janus-config` | Configuration parsing and loading | Minimal loader; full schema pending |
 | `janus-balancer` | Backend selection strategies | All four strategies implemented |
 | `janus-health` | Health checks and circuit breaker logic | Not started |
-| `janus-proxy` | TCP proxy and data plane | TCP forwarding and balancing done; HTTP request-head parsing in progress |
+| `janus-proxy` | TCP proxy and HTTP/1.1 reverse proxy data plane | TCP forwarding, balancing, and the HTTP/1.1 reverse proxy implemented |
 | `janus-admin` | Admin and metrics API | Not started |
 | `janus-bin` | Executable entrypoint | Argument parsing only; runtime wiring pending |
 
@@ -69,9 +75,8 @@ wiring them into a full reverse-proxy path.
 
 ## Next Steps
 
-- Complete the HTTP/1.1 reverse proxy path in `janus-proxy`: add forwarding
-  headers, forward the request to the selected backend, and relay the response
-  to the client.
+- Add a client keep-alive loop so a connection can carry multiple HTTP
+  requests instead of closing after one exchange.
 - Expand the `janus-config` schema to match the example configuration and wire
   it into `janus-bin` so services start from file.
 - Add active health checks and health-aware routing in `janus-health`.
