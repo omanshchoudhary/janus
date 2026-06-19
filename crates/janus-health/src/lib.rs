@@ -1,4 +1,6 @@
-use std::time::Duration;
+use std::{net::SocketAddr, time::Duration};
+use tokio::net::TcpStream;
+use tokio::time::timeout;
 
 #[derive(Debug,Clone)]
 pub struct HealthCheckConfig {
@@ -26,6 +28,16 @@ pub enum HealthCheckKind {
     TcpConnect,
     Http {path: String}
 }
+
+async fn tcp_connect_check(addr:SocketAddr, timeout_dur: Duration) -> bool{
+    match timeout(timeout_dur, TcpStream::connect(addr) ).await {
+        Ok(Ok(_)) => true,
+        _ => false
+    }
+}
+
+
+
 
 pub fn janus_health() -> &'static str {
     "janus-health"
