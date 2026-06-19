@@ -1,4 +1,5 @@
 use janus_core::HealthStatus;
+use janus_core::RuntimeState;
 use std::{net::SocketAddr, time::Duration};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::TcpStream;
@@ -35,28 +36,30 @@ struct HealthTracker {
 
 impl HealthTracker {
     fn new(config: &HealthCheckConfig) -> Self {
-        Self{
+        Self {
             status: HealthStatus::Unknown,
-        consecutive_successes: 0,
-        consecutive_failures: 0,
-        healthy_threshold: config.healthy_threshold,
-        unhealthy_threshold: config.unhealthy_threshold,
+            consecutive_successes: 0,
+            consecutive_failures: 0,
+            healthy_threshold: config.healthy_threshold,
+            unhealthy_threshold: config.unhealthy_threshold,
         }
     }
     fn record(&mut self, passed: bool) -> Option<HealthStatus> {
         if passed {
-            self.consecutive_successes+=1;
-            self.consecutive_failures=0;
-            if self.consecutive_successes >= self.healthy_threshold 
-            && self.status != HealthStatus::Healthy {
+            self.consecutive_successes += 1;
+            self.consecutive_failures = 0;
+            if self.consecutive_successes >= self.healthy_threshold
+                && self.status != HealthStatus::Healthy
+            {
                 self.status = HealthStatus::Healthy;
                 return Some(self.status);
             }
         } else {
-            self.consecutive_failures+=1;
-            self.consecutive_successes=0;
-            if self.consecutive_failures >= self.unhealthy_threshold 
-            && self.status != HealthStatus::Unhealthy {
+            self.consecutive_failures += 1;
+            self.consecutive_successes = 0;
+            if self.consecutive_failures >= self.unhealthy_threshold
+                && self.status != HealthStatus::Unhealthy
+            {
                 self.status = HealthStatus::Unhealthy;
                 return Some(self.status);
             }
@@ -102,8 +105,39 @@ async fn http_check(addr: SocketAddr, path: &str, timeout_dur: Duration) -> bool
     matches!(result, Ok(Some(true)))
 }
 
+pub fn spawn_health_supervisor(
+    state: RuntimeState,
+    config: HealthCheckConfig,
+) -> tokio::task::JoinHandle<()> {
+    tokio::spawn(async move {
+        // one tracker per backend, similar to state.backends()
+        let mut trackers: Vec<HealthTracker> = state
+            .backends()
+            .iter()
+            .map(|_| HealthTracker::new(&config))
+            .collect();
+        
+        // setting up a periodic background loop using Tokio's timer
+        let mut ticker = tokio::time::interval(config.interval);
+        loop {
+            ticker.tick().await; // Wait for the next scheduled interval before running the health checks again.
 
+            for(backend,tracker) in state.backends().iter().zip(&mut trackers) {
+                let addr = backend.backend().address.0;
 
+                let passed = match &config.kind {
+                    HealthCheckKind::TcpConnect => tcp_connect_check(addr, config.timeout).await,
+                    HealthCheckKind::Http { path } => http_check(addr, path, config.timeout).await,
+                };
+
+                if let Some(new_status) = tracker.record(passed) {
+                    tracing::info!(backend = %backend.backend().id.0, ?new_status, "health transition");
+                    backend.set_health(new_status);
+                }
+            }
+        }
+    })
+}
 
 pub fn janus_health() -> &'static str {
     "janus-health"
