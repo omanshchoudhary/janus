@@ -142,3 +142,64 @@ pub fn spawn_health_supervisor(
 pub fn janus_health() -> &'static str {
     "janus-health"
 }
+
+#[cfg(test)]
+mod tests {
+    use super::{HealthCheckConfig, HealthTracker};
+    use janus_core::HealthStatus;
+
+    fn config(healthy: u32, unhealthy: u32) -> HealthCheckConfig {
+        HealthCheckConfig {
+            healthy_threshold: healthy,
+            unhealthy_threshold: unhealthy,
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn failures_below_threshold_do_not_transition() {
+        let mut tracker = HealthTracker::new(&config(2, 3));
+
+        // unhealthy_threshold is 3, so the first two failures are not enough.
+        assert_eq!(tracker.record(false), None);
+        assert_eq!(tracker.record(false), None);
+    }
+
+    #[test]
+    fn reaching_the_unhealthy_threshold_transitions_once() {
+        let mut tracker = HealthTracker::new(&config(2, 3));
+
+        assert_eq!(tracker.record(false), None);
+        assert_eq!(tracker.record(false), None);
+        // The third consecutive failure crosses the threshold.
+        assert_eq!(tracker.record(false), Some(HealthStatus::Unhealthy));
+        // Already Unhealthy: further failures must not re-report a transition.
+        assert_eq!(tracker.record(false), None);
+    }
+
+    #[test]
+    fn reaching_the_healthy_threshold_transitions_once() {
+        let mut tracker = HealthTracker::new(&config(2, 3));
+
+        assert_eq!(tracker.record(true), None);
+        // Second consecutive success crosses healthy_threshold.
+        assert_eq!(tracker.record(true), Some(HealthStatus::Healthy));
+        assert_eq!(tracker.record(true), None);
+    }
+
+    #[test]
+    fn a_success_resets_the_failure_streak() {
+        let mut tracker = HealthTracker::new(&config(2, 3));
+
+        // Two failures, then a success wipes the failure counter.
+        tracker.record(false);
+        tracker.record(false);
+        tracker.record(true);
+
+        // The streak restarts: two failures are no longer enough to flip.
+        assert_eq!(tracker.record(false), None);
+        assert_eq!(tracker.record(false), None);
+        // Only the third fresh failure crosses the threshold again.
+        assert_eq!(tracker.record(false), Some(HealthStatus::Unhealthy));
+    }
+}
