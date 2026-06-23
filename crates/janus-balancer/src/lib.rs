@@ -36,7 +36,12 @@ pub struct SelectionContext {
 pub fn healthy_candidates(candidates: &[BackendCandidate]) -> Vec<BackendCandidate> {
     candidates
         .iter()
-        .filter(|c| c.runtime.health() == HealthStatus::Healthy)
+        .filter(|c| {
+            matches!(
+                c.runtime.health(),
+                HealthStatus::Healthy | HealthStatus::Unknown
+            )
+        })
         .cloned()
         .collect()
 }
@@ -257,6 +262,21 @@ mod tests {
 
         let sel4 = balancer.select(&candidates, &ctx).unwrap();
         assert_eq!(sel4.runtime.backend().id.0, "b1");
+    }
+
+    #[test]
+    fn test_unknown_backends_are_routable_at_startup() {
+        // Before the first health probe runs, every backend is Unknown.
+        // Traffic must still flow, otherwise the proxy is dead until the
+        // first interval tick.
+        let b1 = create_fixture("b1", 1, HealthStatus::Unknown, 0);
+        let b2 = create_fixture("b2", 1, HealthStatus::Unknown, 0);
+
+        let candidates = vec![b1.candidate.clone(), b2.candidate.clone()];
+        let balancer = RoundRobinBalancer::new();
+        let ctx = SelectionContext { client_addr: None };
+
+        assert!(balancer.select(&candidates, &ctx).is_some());
     }
 
     #[test]
