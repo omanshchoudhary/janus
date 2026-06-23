@@ -30,7 +30,7 @@ impl ProxyMetrics {
             2 => &self.responses_2xx,
             3 => &self.responses_3xx,
             4 => &self.responses_4xx,
-            _ => &self.responses_5xx, 
+            _ => &self.responses_5xx,
         };
         counter.fetch_add(1, Ordering::Relaxed);
     }
@@ -307,14 +307,26 @@ async fn handle_http_connection(
         Ok(head) => head,
         Err(error) => {
             tracing::error!(connection_id = connection_id.0, %peer_addr, %error, "failed to read request head");
-            close_connection(client_reader.get_mut(), connection_id.0, peer_addr, active_connections.as_ref()).await;
+            close_connection(
+                client_reader.get_mut(),
+                connection_id.0,
+                peer_addr,
+                active_connections.as_ref(),
+            )
+            .await;
             return;
         }
     };
 
     if let Err(error) = reject_unsupported(&head) {
         tracing::error!(connection_id = connection_id.0, %peer_addr, %error, "unsupported request");
-        close_connection(client_reader.get_mut(), connection_id.0, peer_addr, active_connections.as_ref()).await;
+        close_connection(
+            client_reader.get_mut(),
+            connection_id.0,
+            peer_addr,
+            active_connections.as_ref(),
+        )
+        .await;
         return;
     }
     strip_hop_by_hop(&mut head);
@@ -339,7 +351,13 @@ async fn handle_http_connection(
                 "failed to connect to backend"
             );
             backend_runtime.record_failure();
-            close_connection(client_reader.get_mut(), connection_id.0, peer_addr, active_connections.as_ref()).await;
+            close_connection(
+                client_reader.get_mut(),
+                connection_id.0,
+                peer_addr,
+                active_connections.as_ref(),
+            )
+            .await;
             return;
         }
     };
@@ -350,7 +368,13 @@ async fn handle_http_connection(
     {
         tracing::error!(connection_id = connection_id.0, %peer_addr, %error, "failed to write request to backend");
         backend_runtime.record_failure();
-        close_connection(client_reader.get_mut(), connection_id.0, peer_addr, active_connections.as_ref()).await;
+        close_connection(
+            client_reader.get_mut(),
+            connection_id.0,
+            peer_addr,
+            active_connections.as_ref(),
+        )
+        .await;
         return;
     }
 
@@ -360,14 +384,26 @@ async fn handle_http_connection(
             if let Err(error) = tokio::io::copy(&mut body, &mut backend_socket).await {
                 tracing::error!(connection_id = connection_id.0, %peer_addr, %error, "failed to copy request body");
                 backend_runtime.record_failure();
-                close_connection(client_reader.get_mut(), connection_id.0, peer_addr, active_connections.as_ref()).await;
+                close_connection(
+                    client_reader.get_mut(),
+                    connection_id.0,
+                    peer_addr,
+                    active_connections.as_ref(),
+                )
+                .await;
                 return;
             }
         }
         Ok(_) => {}
         Err(error) => {
             tracing::error!(connection_id = connection_id.0, %peer_addr, %error, "invalid content-length");
-            close_connection(client_reader.get_mut(), connection_id.0, peer_addr, active_connections.as_ref()).await;
+            close_connection(
+                client_reader.get_mut(),
+                connection_id.0,
+                peer_addr,
+                active_connections.as_ref(),
+            )
+            .await;
             return;
         }
     }
@@ -386,7 +422,13 @@ async fn handle_http_connection(
         Err(error) => {
             tracing::error!(connection_id = connection_id.0, %peer_addr, %error, "failed to read response head");
             backend_runtime.record_failure();
-            close_connection(client_reader.get_mut(), connection_id.0, peer_addr, active_connections.as_ref()).await;
+            close_connection(
+                client_reader.get_mut(),
+                connection_id.0,
+                peer_addr,
+                active_connections.as_ref(),
+            )
+            .await;
             return;
         }
     };
@@ -406,7 +448,13 @@ async fn handle_http_connection(
         .await
     {
         tracing::error!(connection_id = connection_id.0, %peer_addr, %error, "failed to write response head to client");
-        close_connection(client_reader.get_mut(), connection_id.0, peer_addr, active_connections.as_ref()).await;
+        close_connection(
+            client_reader.get_mut(),
+            connection_id.0,
+            peer_addr,
+            active_connections.as_ref(),
+        )
+        .await;
         return;
     }
 
@@ -418,7 +466,13 @@ async fn handle_http_connection(
         Ok(_) => tokio::io::copy(&mut backend_reader, client_reader.get_mut()).await,
         Err(error) => {
             tracing::error!(connection_id = connection_id.0, %peer_addr, %error, "invalid response content-length");
-            close_connection(client_reader.get_mut(), connection_id.0, peer_addr, active_connections.as_ref()).await;
+            close_connection(
+                client_reader.get_mut(),
+                connection_id.0,
+                peer_addr,
+                active_connections.as_ref(),
+            )
+            .await;
             return;
         }
     };
@@ -427,7 +481,13 @@ async fn handle_http_connection(
         tracing::error!(connection_id = connection_id.0, %peer_addr, %error, "failed to copy response body");
     }
 
-    close_connection(client_reader.get_mut(), connection_id.0, peer_addr, active_connections.as_ref()).await;
+    close_connection(
+        client_reader.get_mut(),
+        connection_id.0,
+        peer_addr,
+        active_connections.as_ref(),
+    )
+    .await;
 }
 
 async fn connect_backend(
@@ -950,4 +1010,25 @@ fn serialize_response_head(head: &HttpResponseHead) -> String {
     });
     out.push_str("\r\n");
     out
+}
+
+#[derive(Debug, Clone)]
+pub struct TimeoutConfig {
+    pub connect_timeout: Duration,
+    pub read_timeout: Duration,
+    pub write_timeout: Duration,
+    pub request_timeout: Duration,
+    pub idle_timeout: Duration,
+}
+
+impl Default for TimeoutConfig {
+    fn default() -> Self {
+        Self {
+            connect_timeout: Duration::from_secs(2),
+            read_timeout: Duration::from_secs(30),
+            write_timeout: Duration::from_secs(30),
+            request_timeout: Duration::from_secs(60),
+            idle_timeout: Duration::from_secs(60),
+        }
+    }
 }
