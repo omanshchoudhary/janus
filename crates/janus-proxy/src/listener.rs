@@ -1,0 +1,130 @@
+use crate::config::*;
+use crate::http::handle_http_connection;
+use crate::tcp::handle_tcp_connection;
+use janus_balancer::{BackendCandidate, LoadBalancer, RoundRobinBalancer, SelectionContext};
+use janus_core::{Backend, BackendRuntime, HealthStatus, Protocol};
+use std::sync::atomic::{AtomicU64, AtomicUsize};
+use std::sync::Arc;
+use tokio::io::AsyncWriteExt;
+use tokio::net::TcpListener;
+
+// Bind our tcp listener to a port.
+pub async fn run_tcp_listener(config: ListenerConfig, backend: Backend) -> janus_core::Result<()> {
+    let listener = TcpListener::bind(config.listen_addr).await?;
+    tracing::info!(listen_addr = %config.listen_addr, "listener started");
+    serve_tcp_listener(listener, backend).await
+}
+
+pub async fn serve_tcp_listener(listener: TcpListener, backend: Backend) -> janus_core::Result<()> {
+    let balancer = Arc::new(RoundRobinBalancer::new());
+    serve_tcp_listener_multi(listener, vec![backend], balancer, Protocol::Tcp).await
+}
+
+pub async fn run_tcp_listener_multi(
+    config: ListenerConfig,
+    backends: Vec<Backend>,
+    balancer: Arc<dyn LoadBalancer + Send + Sync>,
+    protocol: Protocol,
+) -> janus_core::Result<()> {
+    let listener = TcpListener::bind(config.listen_addr).await?;
+    tracing::info!(listen_addr = %config.listen_addr, "listener started");
+    serve_tcp_listener_multi(listener, backends, balancer, protocol).await
+}
+
+pub async fn serve_tcp_listener_multi(
+    listener: TcpListener,
+    backends: Vec<Backend>,
+    balancer: Arc<dyn LoadBalancer + Send + Sync>,
+    protocol: Protocol,
+) -> janus_core::Result<()> {
+    let metrics = Arc::new(ProxyMetrics {
+        bytes_in: AtomicU64::new(0),
+        bytes_out: AtomicU64::new(0),
+        responses_1xx: AtomicU64::new(0),
+        responses_2xx: AtomicU64::new(0),
+        responses_3xx: AtomicU64::new(0),
+        responses_4xx: AtomicU64::new(0),
+        responses_5xx: AtomicU64::new(0),
+    });
+
+    let mut next_connection_id = 0u64;
+    let active_connections = Arc::new(AtomicUsize::new(0));
+    let candidates: Vec<BackendCandidate> = backends
+        .into_iter()
+        .map(|b| {
+            let runtime = Arc::new(BackendRuntime::new(b));
+            runtime.set_health(HealthStatus::Healthy);
+            BackendCandidate { runtime }
+        })
+        .collect();
+
+    loop {
+        match listener.accept().await {
+            // Accepting client connections
+            // addr is the client address
+            Ok((mut socket, addr)) => {
+                let ctx = SelectionContext {
+                    client_addr: Some(addr),
+                };
+                let selected = match balancer.select(&candidates, &ctx) {
+                    Some(selected) => selected,
+                    None => {
+                        tracing::warn!(%addr, "no backend available for connection");
+                        let _ = socket.shutdown().await;
+                        continue;
+                    }
+                };
+
+                next_connection_id += 1;
+                let connection_id = ConnectionId(next_connection_id);
+                let current = increment_active_connections(active_connections.as_ref());
+
+                tracing::info!(
+                    connection_id = connection_id.0,
+                    %addr,
+                    active_connections = current,
+                    "accepted connection"
+                );
+
+                // These are moved to the spawn block
+                // So the task owns its clone, the loop owns its original, both point to the same data.
+                let active_connections_for_task = Arc::clone(&active_connections);
+                let metrics_for_task = metrics.clone();
+                let backend_runtime_for_task = Arc::clone(&selected.runtime);
+
+                tokio::spawn(async move {
+                    // tokio::spawn` is fire‑and‑forget
+                    // It schedules the task and returns immediately. The loop keeps going to the next `accept().await`; the handler runs independently in the runtime.
+                    match protocol {
+                        Protocol::Tcp => {
+                            handle_tcp_connection(
+                                socket,
+                                connection_id,
+                                addr,
+                                active_connections_for_task,
+                                backend_runtime_for_task,
+                                metrics_for_task,
+                            )
+                            .await;
+                        }
+
+                        Protocol::Http1 => {
+                            handle_http_connection(
+                                socket,
+                                connection_id,
+                                addr,
+                                active_connections_for_task,
+                                backend_runtime_for_task,
+                                metrics_for_task,
+                            )
+                            .await;
+                        }
+                    }
+                });
+            }
+            Err(error) => {
+                tracing::error!(%error, "failed to accept incoming connection");
+            }
+        }
+    }
+}
