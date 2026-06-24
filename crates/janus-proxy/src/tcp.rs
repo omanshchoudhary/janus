@@ -16,6 +16,7 @@ pub(crate) async fn handle_tcp_connection(
     active_connections: Arc<AtomicUsize>,
     backend_runtime: Arc<BackendRuntime>,
     metrics: Arc<ProxyMetrics>,
+    retry: RetryConfig
 ) {
     let _connection_guard = backend_runtime.begin_connection();
     let backend = backend_runtime.backend();
@@ -29,7 +30,7 @@ pub(crate) async fn handle_tcp_connection(
     );
 
     let started_at = std::time::Instant::now();
-    let mut backend_socket = match connect_backend(&backend, Duration::from_secs(2)).await {
+    let mut backend_socket = match connect_with_retry(backend, &retry, Duration::from_secs(2)).await {
         Ok(stream) => stream,
         Err(error) => {
             tracing::error!(
@@ -122,5 +123,26 @@ pub(crate) async fn connect_backend(
         Ok(Ok(stream)) => Ok(stream),
         Ok(Err(error)) => Err(error.into()),
         Err(_) => Err(janus_core::Error::Timeout),
+    }
+}
+
+
+async fn connect_with_retry(
+    backend: &Backend,
+    retry: &RetryConfig,
+    connect_timeout: Duration
+) -> janus_core::Result<TcpStream> {
+    let mut attempt =0;
+    loop {
+        attempt+=1;
+        match connect_backend(backend, connect_timeout).await {
+            Ok(stream) => return Ok(stream),
+            Err(error)=>{
+                if attempt >= retry.max_attempts || !retry.retry_on_connect_failure{
+                    return Err(error)
+                }
+                tokio::time::sleep(retry.backoff).await; // wait, then loop again
+            }
+        }
     }
 }

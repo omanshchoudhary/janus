@@ -57,6 +57,7 @@ pub async fn serve_tcp_listener_multi(
             BackendCandidate { runtime }
         })
         .collect();
+    let retry = RetryConfig::default();
 
     loop {
         match listener.accept().await {
@@ -91,7 +92,7 @@ pub async fn serve_tcp_listener_multi(
                 let active_connections_for_task = Arc::clone(&active_connections);
                 let metrics_for_task = metrics.clone();
                 let backend_runtime_for_task = Arc::clone(&selected.runtime);
-
+                let retry_for_task = retry.clone();
                 tokio::spawn(async move {
                     // tokio::spawn` is fire‑and‑forget
                     // It schedules the task and returns immediately. The loop keeps going to the next `accept().await`; the handler runs independently in the runtime.
@@ -104,6 +105,7 @@ pub async fn serve_tcp_listener_multi(
                                 active_connections_for_task,
                                 backend_runtime_for_task,
                                 metrics_for_task,
+                                retry_for_task
                             )
                             .await;
                         }
