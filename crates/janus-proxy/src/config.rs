@@ -1,4 +1,8 @@
-use std::{net::SocketAddr, sync::atomic::{AtomicU64, AtomicUsize, Ordering}, time::Duration};
+use std::{
+    net::SocketAddr,
+    sync::atomic::{AtomicU64, AtomicUsize, Ordering},
+    time::Duration,
+};
 
 // Bytes-in and bytes-out metrics placeholders for overall proxy
 pub struct ProxyMetrics {
@@ -24,16 +28,13 @@ impl ProxyMetrics {
     }
 }
 
-
 // Janus server's listening address.
 pub struct ListenerConfig {
     pub listen_addr: SocketAddr,
 }
 
-
 // Unique id for a single client connection to the proxy
 pub struct ConnectionId(pub u64);
-
 
 #[derive(Debug, Clone)]
 pub struct TimeoutConfig {
@@ -56,7 +57,23 @@ impl Default for TimeoutConfig {
     }
 }
 
-
+#[derive(Debug, Clone)]
+pub struct RetryConfig {
+    pub max_attempts: u32, // includes the first attempt
+    pub retry_on_connect_failure: bool,
+    pub retry_on_status: Vec<u16>, // e.g. [502, 503, 504]
+    pub backoff: Duration, // wait before another retry
+}
+impl Default for RetryConfig {
+    fn default() -> Self {
+        Self {
+            max_attempts: 2,
+            retry_on_connect_failure: true,
+            retry_on_status: vec![502, 503, 504],
+            backoff: Duration::from_millis(100),
+        }
+    }
+}
 pub fn increment_active_connections(active_connections: &AtomicUsize) -> usize {
     active_connections.fetch_add(1, Ordering::Relaxed) + 1
 }
