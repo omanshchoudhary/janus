@@ -61,8 +61,9 @@ impl Default for TimeoutConfig {
 pub struct RetryConfig {
     pub max_attempts: u32, // includes the first attempt
     pub retry_on_connect_failure: bool,
-    pub retry_on_status: Vec<u16>, // e.g. [502, 503, 504]
-    pub backoff: Duration, // wait before another retry
+    pub retry_on_status: Vec<u16>,      // e.g. [502, 503, 504]
+    pub backoff: Duration,              // wait before another retry
+    pub retryable_methods: Vec<String>, // methods safe to retry (idempotent by default)
 }
 impl Default for RetryConfig {
     fn default() -> Self {
@@ -71,6 +72,14 @@ impl Default for RetryConfig {
             retry_on_connect_failure: true,
             retry_on_status: vec![502, 503, 504],
             backoff: Duration::from_millis(100),
+            retryable_methods: vec![
+                "GET".into(),
+                "HEAD".into(),
+                "PUT".into(),
+                "DELETE".into(),
+                "OPTIONS".into(),
+                "TRACE".into(),
+            ],
         }
     }
 }

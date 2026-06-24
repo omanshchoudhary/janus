@@ -729,3 +729,12 @@ mod tests {
         assert_eq!(head.headers.len(), 2);
     }
 }
+
+fn is_request_retryable(head: &HttpRequestHead, retry: &RetryConfig) -> bool {
+    let method_ok = retry
+        .retryable_methods
+        .iter()
+        .any(|m| m.eq_ignore_ascii_case(&head.method));
+    let body_replayable = matches!(content_length(&head.headers), Ok(None) | Ok(Some(0)));
+    method_ok && body_replayable
+}
